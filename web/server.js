@@ -216,7 +216,15 @@ function runFileDialog(scriptBody, valueExpr) {
     return new Promise((resolve) => {
         const ps =
             "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " +
+            // DPI awareness first: without it WinForms dialogs render small/blurry on scaled displays
+            "try { if (-not ('PInvoke.Dpi' -as [type])) { Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware();' -Name Dpi -Namespace PInvoke } } catch { }; " +
+            "try { [PInvoke.Dpi]::SetProcessDPIAware() | Out-Null } catch { }; " +
+            // force Chinese UI strings for the managed dialog parts (buttons/labels of FolderBrowserDialog etc.)
+            "try { $c = New-Object System.Globalization.CultureInfo('zh-CN'); " +
+            "[System.Threading.Thread]::CurrentThread.CurrentUICulture = $c; " +
+            "[System.Threading.Thread]::CurrentThread.CurrentCulture = $c } catch { }; " +
             "Add-Type -AssemblyName System.Windows.Forms; " +
+            "try { [System.Windows.Forms.Application]::EnableVisualStyles() } catch { }; " +
             "if (-not ('PInvoke.Win32' -as [type])) { " +
             "Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr hWnd);' " +
             "-Name Win32 -Namespace PInvoke " +
