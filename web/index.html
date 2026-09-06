@@ -449,6 +449,10 @@
           </div>
         </label>
       </div>
+            <label class="field" style="margin-top:2px;">
+        <span>保存的文件名</span>
+        <input type="text" id="exportName" placeholder="留空 = 默认名带 nr_ 前缀（如 nr_原文件名_编码.mp4）">
+      </label>
       <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
       <label style="display:flex; gap:6px; align-items:center;">
         <input type="checkbox" id="autoExportCk" checked>
@@ -994,7 +998,12 @@ async function startExport(enc, outPath) {
     const r = await fetch('/api/export', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ master, encoder: enc, output: outPath || '' }),
+      body: JSON.stringify({
+        master,
+        encoder: enc,
+        output: outPath || '',
+        fileName: ($('exportName') ? $('exportName').value : '').trim(),
+      }),
     }).then((x) => x.json());
     if (!r.ok || !r.started) {
       window.__expBusy = false;

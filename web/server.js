@@ -889,9 +889,16 @@ const server = http.createServer(async (req, res) => {
         if (exporter.running) {
             return sendJson(res, 409, { ok: false, error: 'another export is already running' });
         }
-        // Output path: explicit file/dir from the user, otherwise outputs/<nr_<stem>_<enc>.mp4>.
+        // Output path + optional custom file name: blank file name keeps the default
+        // (nr_<orig>_<encoder>.mp4); a typed name is honoured (auto .mp4 if no extension).
         const stem = path.basename(master).replace(/^master_/, 'nr_').replace(/\.[^.]+$/, '');
-        const defaultName = `${stem}_${encoder}.mp4`;
+        const customName = (body.fileName || '').trim();
+        let defaultName;
+        if (customName) {
+            defaultName = /\.[A-Za-z0-9]{1,5}$/.test(customName) ? customName : customName + '.mp4';
+        } else {
+            defaultName = `${stem}_${encoder}.mp4`;
+        }
         const finalOut = resolveExportPath(body.output, defaultName);
         fs.mkdirSync(path.dirname(finalOut), { recursive: true });
 
