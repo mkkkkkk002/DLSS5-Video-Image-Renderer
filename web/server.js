@@ -201,6 +201,30 @@ function trackPrep(p) {
     if (current && current.prepProcs) current.prepProcs.push(p);
 }
 
+function rmDirQuiet(d, tries) {
+    tries = tries || 5;
+    for (let k = 0; k < tries; ++k) {
+        try { fs.rmSync(d, { recursive: true, force: true }); return true; }
+        catch (e) { /* transient lock (just-killed process still holds a handle) */ }
+        const until = Date.now() + 400;
+        while (Date.now() < until) { /* busy wait */ }
+    }
+    return false;
+}
+
+// Cancel/failure often kill ffmpeg while it still holds file handles; retry for ~15 s so the
+// raw/4x frame directories never survive a stopped prep job.
+function sweepDirsLater(dirs) {
+    let round = 0;
+    const iv = setInterval(() => {
+        round++;
+        dirs.forEach((d) => rmDirQuiet(d, 2));
+        const alive = dirs.filter((d) => { try { return fs.existsSync(d); } catch (e) { return false; } });
+        if (round > 7 || alive.length === 0) clearInterval(iv);
+    }, 2000);
+    if (iv.unref) iv.unref();
+}
+
 // Single-shot ffmpeg wrapper used by the image-render helpers. "-y -v error" are always added.
 function runFfmpeg(args) {
     return new Promise((ok, bad) => {
@@ -597,7 +621,8 @@ function runRealesrPct(exe, args, total, tick) {
     });
 }
 
-async function preEnhanceRun(inputPath, startS, endS, onStats) {
+async function preEnhanceRun(inputPath, startS, endS, onStats, outState) {
+    outState = outState || {};
     const exe = findRealesr();
     if (!fs.existsSync(exe)) throw new Error('未找到 tools/realesrgan-ncnn-vulkan，无法做 realesr 预处理');
     const model = 'realesr-general-wdn-x4v3'; // 实测 = 保噪超分（保留颗粒、超分清伪影）
@@ -613,11 +638,12 @@ async function preEnhanceRun(inputPath, startS, endS, onStats) {
     const ts = Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
     const dirF = path.join(FRAME_DIR, 'preF_' + ts);
     const dirO = path.join(FRAME_DIR, 'preO_' + ts);
+    if (outState.dirs) outState.dirs.push(dirF, dirO);
     fs.mkdirSync(dirF, { recursive: true });
     fs.mkdirSync(dirO, { recursive: true });
     const outMp4 = path.join(FRAME_DIR, 'pre_' + ts + '.mp4');
     const outA = path.join(FRAME_DIR, 'pre_' + ts + '_a.mp4');
-    const wipe = (d) => { try { fs.rmSync(d, { recursive: true, force: true }); } catch (e) { /* ignore */ } };
+    const wipe = (d) => rmDirQuiet(d, 5);
     const tick = (done, txt) => { if (onStats) onStats(done, estFrames, txt || ''); };
     try {
         console.log('[prep] stage=decode start');
@@ -745,6 +771,7 @@ function startJob(cfg) {
 }
 
 async function startPrepAsync(job, input, startS, endS) {
+    const st = { dirs: [] };
     try {
         const prep = await preEnhanceRun(input, startS, endS, (done, total, txt) => {
             job.prepDone = done;
@@ -764,6 +791,7 @@ async function startPrepAsync(job, input, startS, endS) {
             return;
         }
         runNextPass(job);
+        sweepDirsLater(st.dirs);
     } catch (e) {
         job.phase = 'render';
         if (job.cancelled) {
@@ -773,6 +801,8 @@ async function startPrepAsync(job, input, startS, endS) {
         job.finished = true;
         job.code = -2;
         job.lines.push('ERROR: 预处理失败: ' + e.message);
+    } finally {
+        sweepDirsLater(st.dirs);
     }
 }
 
