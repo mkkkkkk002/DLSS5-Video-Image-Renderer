@@ -170,6 +170,32 @@ function mimeFor(p) {
     );
 }
 
+// ffmpeg runner that reports frame progress (used by the pre-enhance re-encode stage).
+function runFfmpegProgress(args, total, tick, txt) {
+    return new Promise((ok, bad) => {
+        const p = spawn('ffmpeg', ['-y', '-v', 'error', '-nostats', '-progress', 'pipe:1', ...args],
+                        { windowsHide: true });
+        let err = '';
+        let out = '';
+        let lastN = -1;
+        p.stdout.on('data', (c) => {
+            out += c.toString('utf8');
+            const m = out.match(/frame=(\d+)/g);
+            out = out.slice(-4096);
+            if (m) {
+                const n = parseInt(m[m.length - 1].split('=')[1], 10);
+                if (n > lastN) { lastN = n; tick(Math.min(total, n), txt); }
+            }
+        });
+        p.stderr.on('data', (c) => { err += c.toString('utf8'); });
+        p.on('close', (code) => {
+            if (code === 0) { tick(total, ''); return ok(); }
+            bad(new Error('ffmpeg exit ' + code + ' ' + err.trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' | ')));
+        });
+        p.on('error', bad);
+    });
+}
+
 // Single-shot ffmpeg wrapper used by the image-render helpers. "-y -v error" are always added.
 function runFfmpeg(args) {
     return new Promise((ok, bad) => {
@@ -586,6 +612,7 @@ async function preEnhanceRun(inputPath, startS, endS, onStats) {
     const wipe = (d) => { try { fs.rmSync(d, { recursive: true, force: true }); } catch (e) { /* ignore */ } };
     const tick = (done, txt) => { if (onStats) onStats(done, estFrames, txt || ''); };
     try {
+        console.log('[prep] stage=decode start');
         tick(0, '解码源帧…');
         const dec = ['-i', inputPath, '-start_number', '0'];
         if (wStart > 0) dec.push('-ss', String(wStart));
@@ -603,14 +630,18 @@ async function preEnhanceRun(inputPath, startS, endS, onStats) {
         await runRealesrPct(exe, ['-i', dirF, '-o', dirO, '-n', model, '-s', '4', '-f', 'jpg',
                                   '-j', '4:4:4'],
                             frames, (d, t) => tick(d, 'Real-ESRGAN 4x…'));
-        tick(frames, '缩回原尺寸并无损编码…');
-        await runFfmpeg(['-framerate', String(fps), '-i', path.join(dirO, 'f_%06d.jpg'),
-                         '-vf', 'scale=' + W + ':' + H + ':flags=lanczos',
-                         '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-qp', '0',
-                         '-preset', 'ultrafast', outMp4]);
+        tick(0, '缩回原尺寸并无损编码…');
+        console.log('[prep] stage=encode frames=' + frames);
+        await runFfmpegProgress(['-framerate', String(fps), '-i', path.join(dirO, 'f_%06d.jpg'),
+                                 '-vf', 'scale=' + W + ':' + H + ':flags=lanczos',
+                                 '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-qp', '0',
+                                 '-preset', 'ultrafast', outMp4],
+                                frames, (d, t) => tick(d, '缩回原尺寸并无损编码…'), '');
+        tick(frames, '混入原音频…');
         await runFfmpeg(['-i', outMp4, '-i', inputPath,
                          '-map', '0:v:0', '-map', '1:a:0?',
                          '-c', 'copy', '-shortest', outA]);
+        console.log('[prep] stage=done frames=' + frames);
         try { fs.unlinkSync(outMp4); } catch (e) { /* ignore */ }
         wipe(dirF); wipe(dirO);
         setTimeout(() => { wipe(dirF, 2); wipe(dirO, 2); }, 6000);  // late safety net
