@@ -396,6 +396,62 @@ const EXPORT_ENCODERS = {
     libx265_10bit: ['-c:v', 'libx265', '-crf', '18', '-preset', 'medium', '-pix_fmt', 'yuv420p10le'],
 };
 
+// Live state of the most recent / most current export transcode (UI polls it once a second).
+const exporter = { running: false, pct: 0, encoder: null, out: null, error: null };
+
+// Resolves where an export should land: blank -> <ROOT>/outputs/<defaultName>; an existing dir or
+// a trailing slash -> that directory + <defaultName>; otherwise treated as an explicit file path.
+function resolveExportPath(requested, defaultName) {
+    if (!requested || !requested.trim()) return uniquePath(OUTPUTS_DIR, defaultName);
+    let p = requested.trim();
+    let isDir = false;
+    try { isDir = fs.statSync(p).isDirectory(); } catch (e) { isDir = /[\\/]$/.test(p); }
+    if (isDir) return uniquePath(p, defaultName);
+    const ext = path.extname(p);
+    if (!ext) return uniquePath(p, defaultName); // looks like a bare dir that doesn't exist yet
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    return uniquePath(path.dirname(p), path.basename(p));
+}
+
+function probeDurationSec(file) {
+    return new Promise((resolve) => {
+        execFile('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries',
+            'format=duration', '-of', 'csv=p=0', file], { windowsHide: true }, (e, out) => {
+            const t = parseFloat((out || '').trim());
+            resolve(isFinite(t) && t > 0 ? t : 0);
+        });
+    });
+}
+
+// Spawns ffmpeg with -progress on stdout; parses out_time_ms to update exporter.pct roughly
+// once per second. Never touches the DLSS model -- it is a pure transcode of the master.
+function runExport(master, encoder, finalOut) {
+    return new Promise(async (resolve, reject) => {
+        const dur = await probeDurationSec(master);
+        const args = ['-y', '-nostats', '-i', master, '-map', '0', '-c:a', 'copy',
+            ...EXPORT_ENCODERS[encoder], '-progress', 'pipe:1', '-movflags', '+faststart', finalOut];
+        const child = spawn('ffmpeg', args, { windowsHide: true });
+        let buf = '';
+        child.stdout.on('data', (c) => {
+            buf += c.toString('utf8');
+            let nl;
+            while ((nl = buf.indexOf('\n')) >= 0) {
+                const l = buf.slice(0, nl);
+                buf = buf.slice(nl + 1);
+                if (l.startsWith('out_time_ms=')) {
+                    const t = parseInt(l.split('=')[1] || '0', 10) / 1e6;
+                    if (dur > 0) exporter.pct = Math.max(0, Math.min(99, Math.round((t / dur) * 100)));
+                }
+            }
+        });
+        child.on('error', reject);
+        child.on('close', (code) => {
+            exporter.pct = code === 0 ? 100 : exporter.pct;
+            if (code === 0) resolve(); else reject(new Error('ffmpeg export exit code ' + code));
+        });
+    });
+}
+
 // 8-bit H.264 browser preview of the lossless master (10-bit HEVC masters are not playable in
 // some browsers). Lives in the frame dir so it is cleaned when the service shuts down.
 function makeBrowserPreview(masterPath) {
@@ -705,6 +761,13 @@ const server = http.createServer(async (req, res) => {
             output: j.output || null,
             master: j.master || null,
             preview: j.preview || null,
+            export: {
+                running: exporter.running,
+                pct: exporter.pct,
+                encoder: exporter.encoder,
+                out: exporter.out,
+                error: exporter.error,
+            },
             outputSize,
             lines: j.lines.slice(since),
             lineCount,
@@ -809,32 +872,48 @@ const server = http.createServer(async (req, res) => {
     // Windows forbids, deduped with _1/_2 when a same-named file already exists). The UI only
     // ever sees this temporary path; it survives the job so previews keep working, and is purged
     // when the user replaces the input with another file of the same kind.
-    // Exports a finished lossless master to a final file using the chosen encoder. A pure ffmpeg
-    // transcode -- never re-runs the model -- so switching encoders afterwards is cheap.
+    // Exports a finished lossless master to a final file using the chosen encoder. Runs as an
+    // async job so the UI can show per-second progress (/api/status -> export.*). A pure ffmpeg
+    // transcode -- never re-runs the model -- so re-exporting with another encoder is cheap.
     if (url.pathname === '/api/export' && req.method === 'POST') {
         const body = await readBody(req);
         const master = (body.master || '').trim();
         const encoder = (body.encoder || '').trim();
-        const encArgs = EXPORT_ENCODERS[encoder];
         if (!master || !fs.existsSync(master)) {
             return sendJson(res, 400, { ok: false, error: 'master not found' });
         }
-        if (!encArgs) {
+        if (!EXPORT_ENCODERS[encoder]) {
             return sendJson(res, 400, { ok: false, error: 'unknown encoder: ' + encoder });
         }
-        fs.mkdirSync(OUTPUTS_DIR, { recursive: true });
+        if (exporter.running) {
+            return sendJson(res, 409, { ok: false, error: 'another export is already running' });
+        }
+        // Output path: explicit file/dir from the user, otherwise outputs/<nr_<stem>_<enc>.mp4>.
         const stem = path.basename(master).replace(/^master_/, 'nr_').replace(/\.[^.]+$/, '');
-        const finalOut = uniquePath(OUTPUTS_DIR, `${stem}_${encoder}.mp4`);
-        await runFfmpeg(['-y', '-i', master, '-map', '0', '-c:a', 'copy', ...encArgs,
-            '-movflags', '+faststart', finalOut]);
-        const info = {
-            ok: true,
-            encoder,
-            output: finalOut,
-            url: '/api/video?path=' + encodeURIComponent(finalOut),
-        };
-        if (current && current.master === master) current.export = info;
-        return sendJson(res, 200, info);
+        const defaultName = `${stem}_${encoder}.mp4`;
+        const finalOut = resolveExportPath(body.output, defaultName);
+        fs.mkdirSync(path.dirname(finalOut), { recursive: true });
+
+        exporter.running = true;
+        exporter.pct = 0;
+        exporter.encoder = encoder;
+        exporter.out = finalOut;
+        exporter.error = null;
+        runExport(master, encoder, finalOut).then(() => {
+            exporter.running = false;
+            exporter.pct = 100;
+            const info = {
+                ok: true,
+                encoder,
+                output: finalOut,
+                url: '/api/video?path=' + encodeURIComponent(finalOut),
+            };
+            if (current && current.master === master) current.export = info;
+        }).catch((e) => {
+            exporter.running = false;
+            exporter.error = e.message || String(e);
+        });
+        return sendJson(res, 200, { ok: true, started: true, encoder, output: finalOut });
     }
 
     if (url.pathname === '/api/upload' && req.method === 'POST') {
