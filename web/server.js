@@ -1083,6 +1083,10 @@ const server = http.createServer(async (req, res) => {
             args.push('--start-time', frameTime.toString());
             args.push('--end-time', (frameTime + winDur).toString());
             args.push('--dump-frame', ppmPath);
+            // 16-bit first-frame export for the rendered preview: same trick as the image
+            // module, so the compare view never shows the 8-bit Bayer dither grid.
+            const rendered16 = path.join(FRAME_DIR, `rendered_${ts}_16.png`);
+            args.push('--png16', rendered16);
             const exe = findEngine();
             if (!fs.existsSync(exe)) {
                 return sendJson(res, 500, { ok: false, error: 'engine not found' });
@@ -1105,12 +1109,17 @@ const server = http.createServer(async (req, res) => {
             }
 
             // 2) Extract the first frame of the rendered window (== the frame at frameTime).
-            await ff([
-                '-i', tmpMp4,
-                '-frames:v', '1',
-                '-f', 'image2',
-                renderedPath,
-            ]);
+            //    Prefer the engine's 16-bit PNG; fall back to decoding the 8-bit clip.
+            if (fs.existsSync(rendered16)) {
+                renderedPath = rendered16;
+            } else {
+                await ff([
+                    '-i', tmpMp4,
+                    '-frames:v', '1',
+                    '-f', 'image2',
+                    renderedPath,
+                ]);
+            }
 
             try { fs.unlinkSync(tmpMp4); } catch (e) { /* ignore */ }
 
