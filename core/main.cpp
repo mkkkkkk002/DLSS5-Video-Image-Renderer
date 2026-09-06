@@ -38,6 +38,7 @@
 #include "depth_anything.h"
 #include "blend_pass.h"
 #include "densify_pass.h"
+#include "bnoise64.h"   // 64x64 static blue-noise dither mask (non-periodic)
 
 namespace {
 
@@ -172,14 +173,11 @@ static inline float halfToFloat(uint16_t h) {
 // that used to hide 8-bit quantisation, so plain rounding left hard posterisation bands.
 static void finalizeToRgba8(const uint8_t* inRGBA, const uint8_t* outF16, uint8_t* dst,
                             uint32_t width, uint32_t height, float residualMult) {
-    static const uint8_t bayer[4][4] = {{0, 8, 2, 10}, {12, 4, 14, 6},
-                                        {3, 11, 1, 9}, {15, 7, 13, 5}};
     float m = residualMult;
     if (m < 0.f) m = 0.f;
     if (m > 2.f) m = 2.f;
     const float inW = 1.f - m;
     for (uint32_t y = 0; y < height; ++y) {
-        const uint8_t* bayRow = bayer[y & 3];
         for (uint32_t x = 0; x < width; ++x) {
             const size_t px = (size_t)y * width + x;
             const uint8_t* in = inRGBA + px * 4;
@@ -196,7 +194,7 @@ static void finalizeToRgba8(const uint8_t* inRGBA, const uint8_t* outF16, uint8_
             if (r < 0.f) r = 0.f; else if (r > 1.f) r = 1.f;
             if (g < 0.f) g = 0.f; else if (g > 1.f) g = 1.f;
             if (b < 0.f) b = 0.f; else if (b > 1.f) b = 1.f;
-            const float d = ((float)bayRow[x & 3] + 0.5f) / 16.f - 0.5f;
+            const float d = ((float)kBlueNoise64[((y & 63) * 64) + (x & 63)] / 255.f - 0.5f) * 0.936f;
             uint8_t* o = dst + px * 4;
             o[0] = (uint8_t)(int)(r * 255.f + d + 0.5f);
             o[1] = (uint8_t)(int)(g * 255.f + d + 0.5f);
