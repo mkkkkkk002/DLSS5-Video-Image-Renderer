@@ -504,6 +504,7 @@
         <button class="btn" id="vdPickA" title="选择渲染前的视频(左/上层)">选渲染前…</button>
         <button class="btn" id="vdPickB" title="选择渲染后的视频(右/下层)">选渲染后…</button>
         <button class="btn" id="vdSwap" title="交换左右">⇄ 交换</button>
+        <button class="btn" id="vdZoom" style="margin-left:auto;" title="全屏放大对比,拖动分隔条细看">放大对比</button>
       </div>
       <div class="vcompare empty" id="vdBox">
         <div class="vstage" id="vdStage">
@@ -550,6 +551,15 @@
 
 
 <!-- video side-by-side compare styles -->
+<style>
+.vd-zoom {
+  position: fixed !important; inset: 20px; z-index: 900;
+  overflow: auto; border-radius: 12px;
+  box-shadow: 0 12px 48px rgba(0,0,0,.55);
+}
+.vd-zoom .vcompare video, .vd-zoom .vcompare .vstage { max-height: calc(100vh - 260px); }
+.vd-zoom .vcompare { display: block; }
+</style>
 <style>
 .vcompare {
   position: relative; background:#000; border-radius:8px; overflow:hidden;
@@ -686,6 +696,18 @@
     load(other || r.path, r.path);
   });
   $('vdSwap').addEventListener('click', () => { const a = srcOf(vA), b = srcOf(vB); if (a && b) load(b, a); });
+
+  // Full-screen zoom compare: reuses the SAME dom/stage/scrubber/divider (no duplicated state).
+  const vdCard = $('vdCard'), zoomB = $('vdZoom');
+  const setZoom = (on) => {
+    vdCard.classList.toggle('vd-zoom', on);
+    zoomB.textContent = on ? '✕ 退出放大' : '放大对比';
+    zoomB.title = on ? '退出全屏对比 (Esc)' : '全屏放大对比,拖动分隔条细看';
+  };
+  zoomB.addEventListener('click', () => setZoom(!vdCard.classList.contains('vd-zoom')));
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && vdCard.classList.contains('vd-zoom')) setZoom(false);
+  });
 
   window.vdCompare = {
     load: load,
