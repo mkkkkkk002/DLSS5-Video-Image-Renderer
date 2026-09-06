@@ -848,6 +848,14 @@ function renderStatus(s) {
       st.className = 'status err';
       showStats('');
     }
+  } else if (s.phase === 'prep') {
+    // Pre-process phase (Real-ESRGAN before the NR stage): same rhythm as the render progress.
+    const pt = (s.prepTxt || '预处理');
+    st.textContent = totalF > 0 ? `${pt} · 第 ${doneF}/${totalF} 帧` : `${pt}…`;
+    st.className = 'status';
+    showStats(fps > 0 && s.etaSec > 0
+      ? `平均 ${fps.toFixed(1)} 帧/秒 · 剩余约 ${fmtDur(s.etaSec)}`
+      : '统计中…');
   } else if (s.running) {
     // Whole-video multi-pass: "第 n/m 轮,第 a/b 帧" with an overall (not per-pass) bar.
     const roundTxt = (s.passes || 1) > 1 ? `第 ${s.pass || 1}/${s.passes} 轮,` : '';
