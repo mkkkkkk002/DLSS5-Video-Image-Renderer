@@ -117,11 +117,29 @@ static int cleanup_temp_dirs(void) {
     return f1 + f2;
 }
 
+// Kill pid AND its whole child tree (ffmpeg/realesr spawned by node) so file handles are
+// released before we sweep. TerminateProcess alone would orphan the grandchildren.
+static void kill_tree(DWORD pid) {
+    wchar_t cmd[128];
+    swprintf_s(cmd, 128, L"taskkill /F /T /PID %lu", pid);
+    PROCESS_INFORMATION pi = {0};
+    STARTUPINFOW si = {0};
+    si.cb = sizeof(si);
+    if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE,
+                      CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, 5000);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+}
+
 static void shutdown_now(const char *why) {
     if (InterlockedExchange(&g_done, 1) != 0) return;   // already handled
     log_msg("SHUTDOWN via %s", why);
     if (g_child) {
-        TerminateProcess(g_child, 0);   // node must not write while we sweep
+        // kill node AND any ffmpeg/realesr it spawned; only then sweep, so no process can
+        // recreate or hold files under .frame_previews while we delete it.
+        kill_tree(GetProcessId(g_child));
         WaitForSingleObject(g_child, 3000);
         CloseHandle(g_child);
         g_child = NULL;

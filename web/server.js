@@ -62,10 +62,9 @@ function cleanUploadsDir() {
 
 function cleanFrameDir() {
     try {
-        for (const f of fs.readdirSync(FRAME_DIR)) {
-            fs.unlinkSync(path.join(FRAME_DIR, f));
-        }
+        fs.rmSync(FRAME_DIR, { recursive: true, force: true });
     } catch (e) { /* ignore */ }
+    try { fs.mkdirSync(FRAME_DIR, { recursive: true }); } catch (e) { /* ignore */ }
 }
 
 // Resolves the engine executable at job-start time (not module load) so a rebuild is picked
