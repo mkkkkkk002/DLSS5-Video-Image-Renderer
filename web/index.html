@@ -1200,12 +1200,25 @@ $('startBtn').addEventListener('click', async () => {
     alert('请选择或填写输入视频');
     return;
   }
+  // Render-window guard: never start a job with an illegal range (end must be > start).
+  const st = parseFloat($('startTime').value) || 0;
+  const et = parseFloat($('endTime').value) || 0;
+  if (st < 0 || et < 0) {
+    alert('开始/结束时间不能为负数');
+    return;
+  }
+  if (et > 0 && et <= st) {
+    alert('结束时间必须大于开始时间（当前：' + st + 's → ' + et + 's）');
+    $('endTime').focus();
+    return;
+  }
+
   const body = Object.assign({
     input,
     output: $('output').value.trim(),   // 文件夹；留空 = <项目根>/outputs/
     fileName: $('exportName').value.trim(), // 留空 = 默认名（nr_ 前缀）
-    startTime: parseFloat($('startTime').value) || 0,
-    endTime: parseFloat($('endTime').value) || 0,
+    startTime: st,
+    endTime: et,
   }, buildJobCfg());
 
   $('startBtn').disabled = true;
