@@ -423,10 +423,10 @@
              style="width:100%; max-height:38vh; background:#000; border-radius:8px; margin-top:8px;"
              title="拖动进度条选帧,或用下方按钮把当前时间设为起点/终点"></video>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
-        <button class="btn primary" id="setCmpFrameBtn">渲染当前帧进行预览</button>
+        <button class="btn primary" id="setCmpFrameBtn" title="截取播放器当前画面,直接送图片渲染做单帧对比">快速预览当前帧(截图)</button>
         <button class="btn" id="pickStartBtn">选择当前时间为起点</button>
         <button class="btn" id="pickEndBtn">选择当前时间为终点</button>
-        <span class="meta" id="cmpStatus">先在播放器里选帧:拖动进度条到想要的画面后点击按钮</span>
+        <span class="meta" id="cmpStatus">拖动进度条到想要的画面 → 点「快速预览当前帧(截图)」，截取画面直送单帧渲染(秒级)</span>
       </div>
       <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
       <div style="display:grid; grid-template-columns:150px minmax(300px,350px); gap:12px; align-items:end;">
@@ -1015,39 +1015,50 @@ function playerCurrentTimeOrLoad(input) {
 }
 
 $('setCmpFrameBtn').addEventListener('click', async () => {
-  const input = $('input').value.trim();
-  if (!input) {
-    alert('请先选择输入视频');
-    return;
-  }
+  const v = $('cmpVideo');
   const btn = $('setCmpFrameBtn');
   const status = $('cmpStatus');
-  btn.disabled = true;
-  status.textContent = '加载播放器…';
-  let frameTime;
-  try {
-    frameTime = await playerCurrentTimeOrLoad(input);
-  } catch (e) {
-    status.textContent = e.message;
-    btn.disabled = false;
-    return;
-  }
-  if (!isFinite(frameTime) || frameTime < 0) frameTime = 0;
-  status.textContent = `正在渲染 t=${frameTime.toFixed(2)}s(重新加载模型需几秒)…`;
-  try {
-    const r = await fetch('/api/render-frame', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input, frameTime, cfg: buildJobCfg() }),
-    }).then((x) => x.json());
-    if (!r.ok) {
-      status.textContent = '渲染失败: ' + (r.error || 'unknown');
+  if (!v || !v.readyState || v.readyState < 2) {
+    const input = $('input').value.trim();
+    if (!input) { alert('请先选择输入视频'); return; }
+    status.textContent = '正在加载播放器…';
+    try {
+      await playerCurrentTimeOrLoad(input);
+    } catch (e) {
+      status.textContent = e.message;
       return;
     }
-    $('cmpOrigImg').src = r.orig;
-    $('cmpRenderImg').src = r.render;
+  }
+  if (!v.videoWidth) { status.textContent = '播放器尚未就绪,请稍候再试'; return; }
+  const t = (v.currentTime && isFinite(v.currentTime)) ? v.currentTime : 0;
+  btn.disabled = true;
+  status.textContent = `正在截取 t=${t.toFixed(2)}s 画面并单帧渲染…`;
+  try {
+    // 1) Snapshot the PLAYER's decoded frame at its native resolution (no ffmpeg re-decode).
+    const cv = document.createElement('canvas');
+    cv.width = v.videoWidth;
+    cv.height = v.videoHeight;
+    cv.getContext('2d').drawImage(v, 0, 0);
+    const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
+    if (!blob) throw new Error('截图失败:canvas 没有输出');
+    // 2) Upload the PNG, then reuse the still-image renderer (16-bit, no NV-OF) on that exact
+    //    frame -- a couple of engine calls, not a full video-window render.
+    const up = await fetch('/api/upload', {
+      method: 'POST',
+      headers: { 'x-filename': 'frame_shot.png' },
+      body: blob,
+    }).then((x) => x.json());
+    if (!up.ok || !up.path) throw new Error('上传失败: ' + (up.error || '?'));
+    const rr = await fetch('/api/render-image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: up.path, cfg: buildJobCfg() }),
+    }).then((x) => x.json());
+    if (!rr.ok) throw new Error('渲染失败: ' + (rr.error || '?'));
+    $('cmpOrigImg').src = rr.orig;
+    $('cmpRenderImg').src = rr.render;
     $('compareBox').classList.remove('empty');
-    status.textContent = `${r.width}x${r.height} @ t=${r.frameTime.toFixed(2)}s — 移动鼠标对比`;
+    status.textContent = `${rr.width}x${rr.height} @ 播放器 t=${t.toFixed(2)}s — 截图快速渲染,移动鼠标对比`;
     setCmpSplit(0.5);  // reset to centre on every fresh render
   } catch (e) {
     status.textContent = '请求失败: ' + e.message;
