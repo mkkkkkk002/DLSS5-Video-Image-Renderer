@@ -640,7 +640,6 @@
     vB.src = vurl(topSrc); vA.src = vurl(baseSrc);
     // default muted on both; volume slider is the only way to unmute the rendered track
     vB.muted = true; vA.muted = true; curMuted = true; muteB.textContent = '🔇';
-    vA.loop = true; vB.loop = true;              // auto-replay at the end
     applyLabels();
     box.classList.remove('empty');
     ctrl.hidden = true;
@@ -675,11 +674,23 @@
   vB.addEventListener('play', () => { if (!vA.paused) { /* both playing */ } });
   vA.addEventListener('pause', () => { setPlayIcon(); if (!vB.paused) vB.pause(); });
   vB.addEventListener('pause', () => { if (!vA.paused) vA.pause(); });
+  let restarting = false;
+  const restartAll = () => {
+    if (restarting) return;
+    restarting = true;
+    try { vA.pause(); vB.pause(); } catch (e) { /* ignore */ }
+    try { vA.currentTime = 0; vB.currentTime = 0; } catch (e) { /* ignore */ }
+    setTimeout(() => { restarting = false; }, 120);
+    try { vA.play().catch(() => { }); } catch (e) { /* ignore */ }
+    try { if (vB.paused) vB.play().catch(() => { }); } catch (e) { /* ignore */ }
+  };
+  vA.addEventListener('ended', restartAll);   // auto-replay together, never frame-skewed
+  vB.addEventListener('ended', restartAll);
 
   // drift correction while playing
   setInterval(() => {
     if (!vA.paused && vB.currentTime != null && vA.currentTime != null &&
-        Math.abs(vA.currentTime - vB.currentTime) > 0.15) {
+        Math.abs(vA.currentTime - vB.currentTime) > 0.05) {
       try { vB.currentTime = vA.currentTime; } catch (e) { /* ignore */ }
     }
   }, 500);
