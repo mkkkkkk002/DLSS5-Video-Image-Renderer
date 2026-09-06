@@ -450,6 +450,10 @@
         </label>
       </div>
       <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
+      <label style="display:flex; gap:6px; align-items:center;">
+        <input type="checkbox" id="autoExportCk" checked>
+        <span style="font-size:12px;">渲染完成后自动按当前编码器 + 路径导出一次</span>
+      </label>
       <div class="btn-row" style="margin-top:4px;">
         <button class="btn primary" id="startBtn">开始处理</button>
         <button class="btn danger" id="cancelBtn" disabled>停止</button>
@@ -904,8 +908,8 @@ function renderStatus(s) {
           v.src = '/api/video?path=' + encodeURIComponent(s.preview);
           v.style.display = '';
         }
-        // Auto-export once with the encoder/path chosen above.
-        if (!window.__autoExportDone) {
+        // Auto-export once with the encoder/path chosen above (only if the checkbox is on).
+        if ($('autoExportCk') && $('autoExportCk').checked && !window.__autoExportDone) {
           window.__autoExportDone = true;
           setTimeout(() => startExport($('encoder').value, $('output').value.trim()), 400);
         }
@@ -979,7 +983,7 @@ function showExportMsg(text, isErr) {
 
 async function startExport(enc, outPath) {
   const master = window.__master;
-  if (!master) { showExportMsg('没有可导出的主片（请先渲染）', true); return false; }
+  if (!master) { showExportMsg('无可导出的主片（请先成功渲染）', true); return false; }
   if (window.__expBusy) { showExportMsg('已有导出正在进行，请稍候', true); return false; }
   window.__expBusy = true;
   $('exportMsg').style.display = 'none';
