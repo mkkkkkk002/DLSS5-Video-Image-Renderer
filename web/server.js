@@ -895,17 +895,17 @@ const server = http.createServer(async (req, res) => {
         // When a custom file name is given, 「保存的文件名」owns the basename and the output
         // field is a folder only -- even if the user pasted something that looks like a file
         // path (its parent dir is used), so the two controls never fight.
+        // Default file name is just `nr_<original>.mp4` (no encoder suffix). If the user exports
+        // multiple encoders into the same folder, uniquePath() appends (1)/(2)/... so nothing
+        // is silently overwritten.
         const customName = (body.fileName || '').trim();
         let outputRaw = (body.output || '').trim();
         if (customName && outputRaw && /\.[A-Za-z0-9]{1,5}$/.test(path.basename(outputRaw))) {
             outputRaw = path.dirname(outputRaw);
         }
-        let defaultName;
-        if (customName) {
-            defaultName = /\.[A-Za-z0-9]{1,5}$/.test(customName) ? customName : customName + '.mp4';
-        } else {
-            defaultName = `${stem}_${encoder}.mp4`;
-        }
+        const defaultName = customName
+            ? (/\.[A-Za-z0-9]{1,5}$/.test(customName) ? customName : customName + '.mp4')
+            : `${stem}.mp4`;
         const finalOut = resolveExportPath(outputRaw, defaultName);
         fs.mkdirSync(path.dirname(finalOut), { recursive: true });
 
