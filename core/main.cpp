@@ -1199,6 +1199,13 @@ int wmain(int argc, wchar_t** argv) {
     } else if (opt.encoder == "libx265_10bit") {
         opt.encoder = "libx265";
         if (opt.pixFmt == "yuv420p") opt.pixFmt = "yuv420p10le";
+    } else if (opt.encoder == "hevc10_lossless") {
+        // Master intermediate for the two-stage flow: x265 lossless 10-bit. The lossless
+        // master is the export source for any later 8/10-bit encode, so re-encoding is a
+        // fast transcode, never a model re-run.
+        opt.encoder = "libx265";
+        if (opt.pixFmt == "yuv420p") opt.pixFmt = "yuv420p10le";
+        opt.extraArgs += " -preset ultrafast -x265-params lossless=1:log-level=error";
     }
 
     if (opt.input.empty()) {

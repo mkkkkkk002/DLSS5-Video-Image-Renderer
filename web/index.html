@@ -466,6 +466,24 @@
       </div>
     </div>
 
+    <div class="card" id="exportCard" style="display:none;">
+      <h2>视频导出与预览</h2>
+      <video id="resultVideo" controls playsinline preload="metadata"
+             style="width:100%; max-height:38vh; background:#000; border-radius:8px;"></video>
+      <div class="meta" id="exportHint" style="margin-top:6px;">
+        渲染完成：上方预览为 8bit 压缩版（便于网页播放）；正式文件请在「输出设置 → 编码器」里选好
+        8bit/10bit 后点下方导出——换编码器随时可换，秒级完成，不重跑模型。
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
+        <button class="btn primary" id="exportBtn">导出为所选编码</button>
+        <span class="meta" id="exportStatus"></span>
+      </div>
+      <div class="meta" id="exportResult" style="margin-top:6px; display:none;">
+        <a id="exportLink" href="#" target="_blank">打开导出文件</a>
+        <span> · </span><a id="exportDown" href="#" download>下载</a>
+      </div>
+    </div>
+
     <div class="card">
       <h2>进度</h2>
       <div class="bar"><i id="bar"></i></div>
@@ -861,7 +879,23 @@ function renderStatus(s) {
     if (s.code === 0) {
       st.textContent = '渲染完成';
       st.className = 'status done';
-      if (s.output) {
+      if (s.master) {
+        $('resultCard').style.display = '';
+        $('resultInfo').textContent = '无损主片(HEVC10)：' + s.master +
+          ' —— 在下方「视频导出与预览」里选编码器导出正式文件';
+        // Two-stage UI: master ready -> show preview + enable export.
+        const ex = $('exportCard');
+        ex.style.display = '';
+        window.__master = s.master;
+        $('exportBtn').disabled = false;
+        if (s.preview) {
+          const v = $('resultVideo');
+          v.src = '/api/video?path=' + encodeURIComponent(s.preview);
+          v.style.display = '';
+        } else {
+          $('exportStatus').textContent = '预览生成中…';
+        }
+      } else if (s.output) {
         $('resultCard').style.display = '';
         const sizeTxt = s.outputSize != null
           ? ` (${(s.outputSize / 1048576).toFixed(1)} MB)`
@@ -875,6 +909,7 @@ function renderStatus(s) {
       st.textContent = `结束码 ${s.code} · 见日志`;
       st.className = 'status err';
       $('resultCard').style.display = 'none';
+      $('exportCard').style.display = 'none';
       showStats('');
     }
   } else if (s.running) {
@@ -925,6 +960,31 @@ function buildJobCfg() {
     };
 }
 
+async function exportNow() {
+  const master = window.__master;
+  const enc = $('encoder').value;
+  const es = $('exportStatus'), er = $('exportResult');
+  if (!master) { es.textContent = '没有可导出的主片'; return; }
+  es.textContent = '导出中…（转码，不重跑模型）';
+  er.style.display = 'none';
+  try {
+    const r = await fetch('/api/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ master, encoder: enc }),
+    }).then((x) => x.json());
+    if (!r.ok) { es.textContent = '导出失败：' + (r.error || '未知'); return; }
+    es.textContent = `已导出（${enc}）`;
+    er.style.display = '';
+    $('exportLink').href = r.url;
+    $('exportLink').textContent = r.output;
+    $('exportDown').href = '/api/download?path=' + encodeURIComponent(r.output);
+  } catch (e) {
+    es.textContent = '导出出错：' + e.message;
+  }
+}
+$('exportBtn').addEventListener('click', exportNow);
+
 $('startBtn').addEventListener('click', async () => {
   const input = $('input').value.trim();
   if (!input) {
@@ -942,6 +1002,13 @@ $('startBtn').addEventListener('click', async () => {
   $('cancelBtn').disabled = false;
   $('statusText').textContent = '启动中…';
   $('resultCard').style.display = 'none';
+  $('exportCard').style.display = 'none';
+  $('exportResult').style.display = 'none';
+  $('exportStatus').textContent = '';
+  const rv = $('resultVideo');
+  rv.removeAttribute('src');
+  rv.style.display = 'none';
+  window.__master = null;
 
   const r = await fetch('/api/start', {
     method: 'POST',
@@ -949,8 +1016,8 @@ $('startBtn').addEventListener('click', async () => {
     body: JSON.stringify(body),
   }).then((x) => x.json());
 
-  if (r.ok && r.output) {
-    $('output').value = r.output;
+  if (r.ok && r.master) {
+    window.__master = r.master;
   }
 
   if (timer) clearInterval(timer);

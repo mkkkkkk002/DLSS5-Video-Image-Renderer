@@ -353,15 +353,17 @@ function probe(input) {
 }
 
 // Builds the engine argument list for one pass. Only the first pass (from the original file)
-// honours the crop window; later passes re-render the previous pass's full output.
-function engineArgs(cfg, input, output, useWindow) {
+// honours the crop window; later passes re-render the previous pass's full output. When
+// `master` is true the pass writes the lossless 10-bit intermediate (two-stage flow): the user's
+// encoder/pixel-format/codec args are deferred to /api/export so encoding never re-runs the model.
+function engineArgs(cfg, input, output, useWindow, master) {
     const { snippet, forwarder } = resolveModelFiles(cfg);
     const args = [
         '--input', input,
         '--output', output,
         '--snippet', snippet,
         '--forwarder', forwarder,
-        '--encoder', cfg.encoder || 'h264_nvenc',
+        '--encoder', master ? 'hevc10_lossless' : (cfg.encoder || 'h264_nvenc'),
         '--preset', String(cfg.preset ?? 0),
         '--intensity', String(cfg.intensity ?? 1.0),
         '--style', String(cfg.style ?? 0),
@@ -375,12 +377,45 @@ function engineArgs(cfg, input, output, useWindow) {
         if (cfg.startTime > 0) args.push('--start-time', String(cfg.startTime));
         if (cfg.endTime > 0) args.push('--end-time', String(cfg.endTime));
     }
-    if (cfg.codecArgs) args.push('--codec-args', cfg.codecArgs);
-    if (cfg.pixFmt) args.push('--pix-fmt', cfg.pixFmt);
+    if (!master && cfg.codecArgs) args.push('--codec-args', cfg.codecArgs);
+    if (!master && cfg.pixFmt) args.push('--pix-fmt', cfg.pixFmt);
     args.push('--residual-mult', String(cfg.residualMult ?? 1.0));
     args.push('--frame-guidance', String(cfg.frameGuidance ?? 3));
     args.push('--depth-interval', String(cfg.depthInterval ?? 0));
     return args;
+}
+
+// ffmpeg encoding presets used by /api/export (a fast transcode of the lossless master). Keys
+// match the UI encoder ids; *_10bit stay in 10-bit, the rest convert down to 8-bit yuv420p.
+const EXPORT_ENCODERS = {
+    h264_nvenc: ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '20', '-b:v', '0', '-pix_fmt', 'yuv420p'],
+    hevc_nvenc: ['-c:v', 'hevc_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '22', '-b:v', '0', '-pix_fmt', 'yuv420p'],
+    libx264: ['-c:v', 'libx264', '-crf', '18', '-preset', 'medium', '-pix_fmt', 'yuv420p'],
+    libx265: ['-c:v', 'libx265', '-crf', '20', '-preset', 'medium', '-pix_fmt', 'yuv420p'],
+    hevc_nvenc_10bit: ['-c:v', 'hevc_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '20', '-b:v', '0', '-vf', 'format=p010le', '-profile:v', 'main10'],
+    libx265_10bit: ['-c:v', 'libx265', '-crf', '18', '-preset', 'medium', '-pix_fmt', 'yuv420p10le'],
+};
+
+// 8-bit H.264 browser preview of the lossless master (10-bit HEVC masters are not playable in
+// some browsers). Lives in the frame dir so it is cleaned when the service shuts down.
+function makeBrowserPreview(masterPath) {
+    return new Promise((resolve) => {
+        try {
+            if (!masterPath || !fs.existsSync(masterPath)) return resolve(null);
+            fs.mkdirSync(FRAME_DIR, { recursive: true });
+            const stem = path.basename(masterPath, path.extname(masterPath));
+            const out = path.join(FRAME_DIR, stem + '_preview.mp4');
+            runFfmpeg([
+                '-i', masterPath,
+                '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p',
+                '-c:a', 'aac', '-b:a', '192k',
+                '-movflags', '+faststart',
+                out,
+            ]).then(() => resolve(out)).catch(() => resolve(null));
+        } catch (e) {
+            resolve(null);
+        }
+    });
 }
 
 // Whole-video multi-pass plan ("渲染次数"): pass 1 decodes the original file (honouring the
@@ -412,15 +447,18 @@ function startJob(cfg) {
         return { ok: false, error: 'a job is already running' };
     }
 
-    // Auto-generate a non-colliding output name when none was supplied.
-    const outPath = resolveOutput(cfg.input, cfg.output);
+    // Two-stage flow: rendering always writes a LOSSLESS HEVC10 master under outputs/. The user
+    // picks the final encoder afterwards (/api/export), which is a fast transcode -- never a
+    // model re-run. The final file name is therefore not known at render time.
     if (!fs.existsSync(findEngine())) {
         return { ok: false, error: 'engine not found: ' + findEngine() };
     }
+    const ext = path.extname(cfg.input) || '.mp4';
+    const masterPath = uniquePath(OUTPUTS_DIR, 'master_' + path.basename(cfg.input, ext) + ext);
 
     const job = {
         id: nextId++,
-        steps: buildSteps(cfg, outPath),
+        steps: buildSteps(cfg, masterPath),
         passIndex: 0,            // which step is running (0-based)
         done: 0,
         total: 0,
@@ -432,15 +470,18 @@ function startJob(cfg) {
         cancelled: false,
         code: null,
         cfg,
-        output: outPath,
+        output: masterPath,      // the lossless master (browser may not play it; see preview)
+        master: masterPath,
+        preview: null,           // 8-bit H.264 browser preview, filled in after the job finishes
+        export: null,            // last exported final file ({output, url}) from /api/export
     };
     current = job;
     if (job.steps.length > 1) {
         job.lines.push(
-            `whole-video multi-pass: ${job.steps.length} full renders in series (final = ${outPath})`);
+            `whole-video multi-pass: ${job.steps.length} full renders in series (master = ${masterPath})`);
     }
     runNextPass(job);
-    return { ok: true, id: job.id, output: outPath, passes: job.steps.length };
+    return { ok: true, id: job.id, master: masterPath, passes: job.steps.length };
 }
 
 function jobFinish(job, cancelled) {
@@ -450,10 +491,22 @@ function jobFinish(job, cancelled) {
         job.cancelled = true;
         job.finished = true;
         job.code = null;
+        // The (possibly partial) master was only a render intermediate: remove it.
+        try {
+            if (job.master && fs.existsSync(job.master)) fs.unlinkSync(job.master);
+        } catch (e) { /* ignore */ }
     } else {
-        job.lines.push('DONE after ' + job.steps.length + ' pass(es): ' + job.output);
+        job.lines.push('DONE after ' + job.steps.length + ' pass(es): ' + job.master);
         job.finished = true;
         job.code = 0;
+        // Build the 8-bit browser preview in the background; the UI polls /api/status and shows
+        // it when job.preview appears.
+        makeBrowserPreview(job.master).then((p) => {
+            if (p) {
+                job.preview = p;
+                job.lines.push('preview ready (select an encoder to export)');
+            }
+        });
     }
 }
 
@@ -478,7 +531,8 @@ function runNextPass(job) {
     }
     let args;
     try {
-        args = engineArgs(cfg, step.input, step.output, step.window);
+        // The final step of the plan is the lossless master; all passes render to it as such.
+        args = engineArgs(cfg, step.input, step.output, step.window, step.output === job.master);
     } catch (e) {
         cleanupTemps(job);
         job.lines.push('ERROR: ' + e.message);
@@ -649,6 +703,8 @@ const server = http.createServer(async (req, res) => {
             finished: j.finished,
             code: j.code,
             output: j.output || null,
+            master: j.master || null,
+            preview: j.preview || null,
             outputSize,
             lines: j.lines.slice(since),
             lineCount,
@@ -753,6 +809,34 @@ const server = http.createServer(async (req, res) => {
     // Windows forbids, deduped with _1/_2 when a same-named file already exists). The UI only
     // ever sees this temporary path; it survives the job so previews keep working, and is purged
     // when the user replaces the input with another file of the same kind.
+    // Exports a finished lossless master to a final file using the chosen encoder. A pure ffmpeg
+    // transcode -- never re-runs the model -- so switching encoders afterwards is cheap.
+    if (url.pathname === '/api/export' && req.method === 'POST') {
+        const body = await readBody(req);
+        const master = (body.master || '').trim();
+        const encoder = (body.encoder || '').trim();
+        const encArgs = EXPORT_ENCODERS[encoder];
+        if (!master || !fs.existsSync(master)) {
+            return sendJson(res, 400, { ok: false, error: 'master not found' });
+        }
+        if (!encArgs) {
+            return sendJson(res, 400, { ok: false, error: 'unknown encoder: ' + encoder });
+        }
+        fs.mkdirSync(OUTPUTS_DIR, { recursive: true });
+        const stem = path.basename(master).replace(/^master_/, 'nr_').replace(/\.[^.]+$/, '');
+        const finalOut = uniquePath(OUTPUTS_DIR, `${stem}_${encoder}.mp4`);
+        await runFfmpeg(['-y', '-i', master, '-map', '0', '-c:a', 'copy', ...encArgs,
+            '-movflags', '+faststart', finalOut]);
+        const info = {
+            ok: true,
+            encoder,
+            output: finalOut,
+            url: '/api/video?path=' + encodeURIComponent(finalOut),
+        };
+        if (current && current.master === master) current.export = info;
+        return sendJson(res, 200, info);
+    }
+
     if (url.pathname === '/api/upload' && req.method === 'POST') {
         try {
             fs.mkdirSync(UPLOADS_DIR, { recursive: true });
