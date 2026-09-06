@@ -423,10 +423,10 @@
              style="width:100%; max-height:38vh; background:#000; border-radius:8px; margin-top:8px;"
              title="拖动进度条选帧,或用下方按钮把当前时间设为起点/终点"></video>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
-        <button class="btn primary" id="setCmpFrameBtn" title="截取播放器当前画面,直接送图片渲染做单帧对比">快速预览当前帧(截图)</button>
+        <button class="btn primary" id="setCmpFrameBtn" title="截取播放器当前画面,直接送图片渲染,在右侧图片模块做单帧对比">快速渲染当前帧</button>
         <button class="btn" id="pickStartBtn">选择当前时间为起点</button>
         <button class="btn" id="pickEndBtn">选择当前时间为终点</button>
-        <span class="meta" id="cmpStatus">拖动进度条到想要的画面 → 点「快速预览当前帧(截图)」，截取画面直送单帧渲染(秒级)</span>
+        <span class="meta" id="cmpStatus">拖动进度条到想要的画面 → 点「快速渲染当前帧」，结果会出现在右侧图片渲染的对比里</span>
       </div>
       <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
       <div style="display:grid; grid-template-columns:150px minmax(300px,350px); gap:12px; align-items:end;">
@@ -463,21 +463,6 @@
       <div class="meta" id="progStats" style="margin-top:2px; display:none;"></div>
       <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
       <div class="status done" id="exportMsg" style="margin-top:6px; display:none;"></div>
-    </div>
-
-    <div class="card">
-      <h2>对比预览</h2>
-      <div class="compare empty" id="compareBox">
-        <div class="img-stage" id="cmpStage">
-          <img class="orig" id="cmpOrigImg" alt="原图" src="">
-          <div class="render-layer" id="cmpRenderLayer"><img id="cmpRenderImg" alt="渲染后" src=""></div>
-          <div class="divider" id="cmpDivider"></div>
-        </div>
-        <div class="compare-labels">
-          <span>渲染前</span>
-          <span>渲染后</span>
-        </div>
-      </div>
     </div>
   </div>
 
@@ -1055,11 +1040,18 @@ $('setCmpFrameBtn').addEventListener('click', async () => {
       body: JSON.stringify({ input: up.path, cfg: buildJobCfg() }),
     }).then((x) => x.json());
     if (!rr.ok) throw new Error('渲染失败: ' + (rr.error || '?'));
-    $('cmpOrigImg').src = rr.orig;
-    $('cmpRenderImg').src = rr.render;
-    $('compareBox').classList.remove('empty');
-    status.textContent = `${rr.width}x${rr.height} @ 播放器 t=${t.toFixed(2)}s — 截图快速渲染,移动鼠标对比`;
-    setCmpSplit(0.5);  // reset to centre on every fresh render
+    // Show the result in the IMAGE module's compare area (right column).
+    $('imgPreview').style.display = 'none';
+    $('imgBox').style.display = '';
+    $('imgOrigImg').src = rr.orig;
+    $('imgRenderImg').src = rr.render;
+    $('imgBox').classList.remove('empty');
+    imgPickPath = up.path;                       // 保存/放大/重渲都作用于这一帧
+    imgRenderedAbs = rr.renderedAbs || null;
+    $('imgSaveBtn').disabled = !imgRenderedAbs;
+    $('imgZoomBtn').disabled = !imgRenderedAbs;
+    status.textContent = `${rr.width}x${rr.height} @ 播放器 t=${t.toFixed(2)}s — 已渲染,见右侧图片模块对比`;
+    setImgSplit(0.5);
   } catch (e) {
     status.textContent = '请求失败: ' + e.message;
   } finally {
@@ -1067,13 +1059,6 @@ $('setCmpFrameBtn').addEventListener('click', async () => {
   }
 });
 
-function setCmpSplit(p) {
-  // p in [0,1]. Left of the pointer shows the ORIGINAL frame, right shows the RENDERED frame:
-  // the render layer is clipped to only its right portion [p..1] -> left inset = p.
-  const pct = (p * 100).toFixed(2);
-  $('cmpRenderLayer').style.clipPath = `inset(0 0 0 ${pct}%)`;
-  $('cmpDivider').style.left = pct + '%';
-}
 // Convert a mouse event over the compare box into a split position relative to the .img-stage
 // (the exact rect the picture occupies). Using the box rect instead would shift the divider
 // whenever the picture is smaller than the box (letterbox).
@@ -1083,10 +1068,6 @@ function splitFromEvent(e, stage, setter) {
   const p = Math.min(1, Math.max(0, (e.clientX - st.left) / st.width));
   setter(p);
 }
-$('compareBox').addEventListener('mousemove', (e) => splitFromEvent(e, $('cmpStage'), setCmpSplit));
-$('compareBox').addEventListener('mouseleave', () => setCmpSplit(0.5));
-setCmpSplit(0.5);   // initial divider centred
-
 // ---------------------------------------------------------------- image render
 let imgPickPath = null;      // chosen still image on disk
 let imgRenderedAbs = null;   // server path of the last rendered PNG (for 保存)
