@@ -175,6 +175,7 @@ function runFfmpegProgress(args, total, tick, txt) {
     return new Promise((ok, bad) => {
         const p = spawn('ffmpeg', ['-y', '-v', 'error', '-nostats', '-progress', 'pipe:1', ...args],
                         { windowsHide: true });
+        trackPrep(p);
         let err = '';
         let out = '';
         let lastN = -1;
@@ -196,10 +197,15 @@ function runFfmpegProgress(args, total, tick, txt) {
     });
 }
 
+function trackPrep(p) {
+    if (current && current.prepProcs) current.prepProcs.push(p);
+}
+
 // Single-shot ffmpeg wrapper used by the image-render helpers. "-y -v error" are always added.
 function runFfmpeg(args) {
     return new Promise((ok, bad) => {
         const p = spawn('ffmpeg', ['-y', '-v', 'error', ...args], { windowsHide: true });
+        trackPrep(p);
         let err = '';
         p.stderr.on('data', (c) => { err += c.toString('utf8'); });
         p.on('close', (code) => code === 0 ? ok() : bad(new Error('ffmpeg exit ' + code + ' ' + err.trim())));
@@ -537,6 +543,7 @@ function makeBrowserPreview(masterPath) {
 function runCounted(args, dirPath, total, tick) {
     return new Promise((ok, bad) => {
         const p = spawn('ffmpeg', ['-y', '-v', 'error', ...args], { windowsHide: true });
+        trackPrep(p);
         let err = '';
         p.stderr.on('data', (c) => { err += c.toString('utf8'); });
         const iv = setInterval(() => {
@@ -560,6 +567,7 @@ function runCounted(args, dirPath, total, tick) {
 function runRealesrPct(exe, args, total, tick) {
     return new Promise((ok, bad) => {
         const p = spawn(exe, args, { cwd: ROOT, windowsHide: true });
+        trackPrep(p);
         let last = 0;
         let gotProgress = false;
         const push = (chunk) => {
@@ -724,6 +732,7 @@ function startJob(cfg) {
     if (cfg.preEnhance) {
         // Pre-enhance runs as an async "phase 0": the UI polls its progress through /api/status,
         // and only when it finishes do we point the NR steps at the pre-processed intermediate.
+        job.prepProcs = [];
         job.prepDone = 0;
         job.prepTotal = 0;
         job.prepTxt = '启动预处理…';
@@ -757,6 +766,10 @@ async function startPrepAsync(job, input, startS, endS) {
         runNextPass(job);
     } catch (e) {
         job.phase = 'render';
+        if (job.cancelled) {
+            jobFinish(job, true);          // user stopped during prep -> clean finish (not an error)
+            return;
+        }
         job.finished = true;
         job.code = -2;
         job.lines.push('ERROR: 预处理失败: ' + e.message);
@@ -1099,6 +1112,13 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/cancel' && req.method === 'POST') {
         if (current && !current.finished) {
             current.cancelled = true;
+            // Pre-process phase runs its own ffmpeg/realesr children: kill them so "停止" takes
+            // effect immediately instead of only when the current prep step finishes naturally.
+            if (current.phase === 'prep' && current.prepProcs) {
+                for (const p of current.prepProcs) {
+                    try { p.kill(); } catch (e) { /* ignore */ }
+                }
+            }
             if (current.child) {
                 try { current.child.kill(); } catch (e) { /* ignore */ }
             } else {
