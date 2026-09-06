@@ -451,6 +451,10 @@
         <span>保存的文件名</span>
         <input type="text" id="exportName" placeholder="留空 = 默认名（自动带 nr_ 前缀）">
       </label>
+      <label style="display:flex; gap:6px; align-items:center; margin-top:2px;">
+        <input type="checkbox" id="preEnhance">
+        <span style="font-size:12px;">预处理：Real-ESRGAN 保噪超分(4x→缩回原尺寸)后再送 DLSSNR</span>
+      </label>
       <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
             <div class="btn-row" style="margin-top:4px;">
         <button class="btn primary" id="startBtn">开始处理</button>
@@ -889,6 +893,7 @@ function buildJobCfg() {
         frameGuidance: $('flowEnable').checked ? 3 : 0,
         depthInterval: parseInt($('depthInterval').value, 10) || 0,
         renderPasses: Math.max(1, parseInt($('renderPasses').value, 10) || 1),
+        preEnhance: !!($('preEnhance') && $('preEnhance').checked),
     };
 }
 

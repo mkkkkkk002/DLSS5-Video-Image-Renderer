@@ -85,6 +85,16 @@ function findEngine() {
     return path.join(coreDir, 'dlss5nr_run.exe'); // reported only if it truly does not exist
 }
 
+// Resolves the Real-ESRGAN ncnn tool at job time (may be absent: pre-enhance then errors out).
+function findRealesr() {
+    const cands = [
+        path.join(ROOT, 'tools', 'realesrgan-ncnn-vulkan', 'realesrgan-ncnn-vulkan.exe'),
+        path.join(__dirname, '..', 'tools', 'realesrgan-ncnn-vulkan', 'realesrgan-ncnn-vulkan.exe'),
+    ];
+    for (const p of cands) if (fs.existsSync(p)) return p;
+    return cands[0];
+}
+
 // Resolves the NR model dll + forwarder pair for a job. cfg.model selects the precision
 // ('fp16' | 'fp8' | 'auto'); an explicit cfg.snippet / cfg.forwarder (absolute or ROOT-relative)
 // overrides the auto-selection. Throws with a clear message when the requested model is missing
@@ -167,6 +177,20 @@ function runFfmpeg(args) {
         let err = '';
         p.stderr.on('data', (c) => { err += c.toString('utf8'); });
         p.on('close', (code) => code === 0 ? ok() : bad(new Error('ffmpeg exit ' + code + ' ' + err.trim())));
+        p.on('error', bad);
+    });
+}
+
+// Runs an external tool (realesr-ncnn etc.); surfaces the tail of stderr on failure.
+function runTool(exe, args, cwd) {
+    return new Promise((ok, bad) => {
+        const p = spawn(exe, args, { cwd: cwd || ROOT, windowsHide: true });
+        let err = '';
+        p.stderr.on('data', (c) => { err += c.toString('utf8'); });
+        p.on('close', (code) => {
+            if (code === 0) return ok();
+            bad(new Error('tool exit ' + code + ' — ' + err.trim().split(/\r?\n/).filter(Boolean).slice(-6).join(' | ')));
+        });
         p.on('error', bad);
     });
 }
@@ -477,6 +501,59 @@ function makeBrowserPreview(masterPath) {
 // Whole-video multi-pass plan ("渲染次数"): pass 1 decodes the original file (honouring the
 // crop window); every later pass re-renders the *full* previous pass output as if it were a new
 // video, so the final file is the N-th generation. Intermediate outputs are temp files that are
+// ------------------------------------------------------------------ pre-enhance
+// Optional whole-video pre-process with the Real-ESRGAN general model (the KEEP-NOISE "保噪超分"
+// build; note the upstream ncnn files are labelled the opposite way round, so this helper picks
+// the model file by MEASURED behaviour, not by name). Frames are upscaled 4x, shrunk back to the
+// source resolution and re-encoded losslessly, so the DLSSNR stage still sees a same-resolution,
+// same-frame-count stream. Audio is copied over from the source.
+async function preEnhanceRun(inputPath, startS, endS) {
+    const exe = findRealesr();
+    if (!fs.existsSync(exe)) throw new Error('未找到 tools/realesrgan-ncnn-vulkan，无法做 realesr 预处理');
+    const model = 'realesr-general-wdn-x4v3'; // 实测 = 保噪超分（保留颗粒、超分清伪影）
+    const pi = await probe(inputPath);
+    if (!pi.ok || !pi.info.width) throw new Error('预处理: 无法探测输入视频');
+    const W = pi.info.width, H = pi.info.height;
+    const fps = pi.info.fps > 0 ? pi.info.fps : 30;
+    fs.mkdirSync(FRAME_DIR, { recursive: true });
+    const ts = Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+    const dirF = path.join(FRAME_DIR, 'preF_' + ts);   // decoded png frames (source res)
+    const dirO = path.join(FRAME_DIR, 'preO_' + ts);   // realesr output (4x)
+    fs.mkdirSync(dirF, { recursive: true });
+    fs.mkdirSync(dirO, { recursive: true });
+    const outMp4 = path.join(FRAME_DIR, 'pre_' + ts + '.mp4');
+    const outA = path.join(FRAME_DIR, 'pre_' + ts + '_a.mp4');
+    const wipe = (d) => { try { fs.rmSync(d, { recursive: true, force: true }); } catch (e) { /* ignore */ } };
+    try {
+        // 1) decode the render window to png frames
+        const dec = ['-i', inputPath, '-start_number', '0'];
+        if (startS > 0) dec.push('-ss', String(startS));
+        if (endS > 0) dec.push('-to', String(endS));
+        dec.push('-vsync', '0', '-fps_mode', 'passthrough', '-q:v', '1',
+                 path.join(dirF, 'f_%06d.png'));
+        await runFfmpeg(dec);
+        // 2) realesr over the whole directory
+        await runTool(exe, ['-i', dirF, '-o', dirO, '-n', model, '-s', '4', '-f', 'png']);
+        // 3) shrink every 4x frame back to source res, lossless video (audio added next step)
+        await runFfmpeg(['-framerate', String(fps), '-i', path.join(dirO, 'f_%06d.png'),
+                         '-vf', 'scale=' + W + ':' + H + ':flags=lanczos',
+                         '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-qp', '0',
+                         '-preset', 'ultrafast', outMp4]);
+        // 4) remux original audio onto the intermediate (optional mapping keeps silent inputs ok)
+        await runFfmpeg(['-i', outMp4, '-i', inputPath,
+                         '-map', '0:v:0', '-map', '1:a:0?',
+                         '-c', 'copy', '-shortest', outA]);
+        try { fs.unlinkSync(outMp4); } catch (e) { /* ignore */ }
+        wipe(dirF); wipe(dirO);   // always drop the raw/4x frame directories
+        return { file: outA, width: W, height: H, fps };
+    } catch (e) {
+        wipe(dirF); wipe(dirO);
+        try { fs.unlinkSync(outMp4); } catch (e2) { /* ignore */ }
+        try { fs.unlinkSync(outA); } catch (e2) { /* ignore */ }
+        throw e;
+    }
+}
+
 // removed when the job finishes. Each pass is a fresh engine process, i.e. exactly what you would
 // get by running the CLI N times by hand.
 function buildSteps(cfg, finalOut) {
@@ -508,7 +585,8 @@ function startJob(cfg) {
     // v1.2-style single-stage render: the chosen encoder writes the FINAL file directly (no
     // lossless master, no browser preview step). File name honours the dedicated file-name
     // field (or defaults to nr_<input>.mp4); the output field is a folder (or blank = outputs/).
-    const inputStem = path.basename(cfg.input).replace(/\.[^.]+$/, '');
+    const srcName = cfg._origInput || cfg.input;
+    const inputStem = path.basename(srcName).replace(/\.[^.]+$/, '');
     const name = (cfg.fileName || '').trim();
     const defaultName = name
         ? (/\.[A-Za-z0-9]{1,5}$/.test(name) ? name : name + '.mp4')
@@ -529,6 +607,7 @@ function startJob(cfg) {
         cancelled: false,
         code: null,
         cfg,
+        prepFile: cfg._prepFile || null,   // realesr intermediate (cache dir), removed at job end
         output: finalOut,
         master: null,
         preview: null,
@@ -545,6 +624,10 @@ function startJob(cfg) {
 
 function jobFinish(job, cancelled) {
     cleanupTemps(job);
+    if (job.prepFile) {
+        try { if (fs.existsSync(job.prepFile)) fs.unlinkSync(job.prepFile); } catch (e) { /* ignore */ }
+        job.prepFile = null;
+    }
     if (cancelled) {
         job.lines.push('cancelled by user');
         job.cancelled = true;
@@ -841,7 +924,25 @@ const server = http.createServer(async (req, res) => {
         if (!body.input) {
             return sendJson(res, 400, { ok: false, error: 'input is required' });
         }
-        return sendJson(res, 200, startJob(body));
+        try {
+            if (body.preEnhance) {
+                // Optional realesr pre-process: upscale 4x, shrink back to source res, re-encode
+                // losslessly; the window is already applied, so the NR stage runs full-length on
+                // the intermediate at the ORIGINAL resolution.
+                const orig = body.input.trim();
+                const prep = await preEnhanceRun(orig, parseFloat(body.startTime) || 0,
+                                                 parseFloat(body.endTime) || 0);
+                body._origInput = orig;
+                body._prepFile = prep.file;
+                body.input = prep.file;
+                body.startTime = 0;
+                body.endTime = 0;
+            }
+            const r = startJob(body);
+            return sendJson(res, 200, r);
+        } catch (e) {
+            return sendJson(res, 500, { ok: false, error: '预处理失败: ' + e.message });
+        }
     }
 
     if (url.pathname === '/api/cancel' && req.method === 'POST') {
