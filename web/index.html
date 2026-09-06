@@ -699,7 +699,8 @@
   // mouse-driven split (hover & drag both work)
   const setSplit = (pct) => {
     const p = Math.min(1, Math.max(0, pct));
-    topL.style.clipPath = 'inset(0 0 0 ' + (p * 100) + '%)';
+    // top layer = 原视频 must stay LEFT of the divider: clip away its RIGHT side
+    topL.style.clipPath = 'inset(0 ' + ((1 - p) * 100) + '% 0 0)';
     div.style.left = (p * 100) + '%';
   };
   stage.addEventListener('mousemove', (e) => {
