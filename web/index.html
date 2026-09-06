@@ -618,6 +618,19 @@
   let dragging = false, syncing = false, curMuted = true, inited = false, autoNext = false;
   window.__vdManual = false;             // user picked videos manually -> don't auto-overwrite
   window.__vdAutoDone = false;
+  let autoTries = 0;
+  const muteAll = () => { vB.muted = true; vA.muted = true; curMuted = true; muteB.textContent = '🔇'; };
+  const kick = (v) => {
+    try {
+      const pr = v.play();
+      if (pr && pr.catch) pr.catch(() => { setTimeout(() => { try { v.play(); } catch (e) { /* ignore */ } }, 400); });
+    } catch (e) { /* ignore */ }
+  };
+  const autoPlay = () => {                 // muted autoplay is allowed; retry once if blocked
+    if (!autoNext) return;
+    muteAll();
+    kick(vA); kick(vB);
+  };
 
   const vurl = (p) => '/api/video?path=' + encodeURIComponent(p);
   const fmt = (t) => {
@@ -628,11 +641,8 @@
   const onReady = (side) => { ready[side] = true; if (ready.a && ready.b && !inited) {
       inited = true;
       zoomB.disabled = false;
-      if (autoNext) {                       // auto-imported after a render -> start playing (muted)
-        try { vA.play().catch(() => { }); } catch (e) { /* ignore */ }
-        try { if (vB.paused) vB.play().catch(() => { }); } catch (e) { /* ignore */ }
-        autoNext = false;
-      }
+      if (autoNext) { autoTries = 0; autoPlay(); }   // auto-imported after a render -> start playing
+
       ctrl.hidden = false;
       
       syncTo(vB.currentTime || 0);
@@ -681,6 +691,9 @@
 
   vA.addEventListener('loadedmetadata', () => onReady('a'));
   vB.addEventListener('loadedmetadata', () => onReady('b'));
+  vA.addEventListener('canplay', () => { if (autoNext && vA.paused && autoTries < 6) { autoTries++; autoPlay(); } });
+  vB.addEventListener('canplay', () => { if (autoNext && vB.paused && autoTries < 6) { autoTries++; autoPlay(); } });
+  vA.addEventListener('playing', () => { autoNext = false; autoTries = 0; });
   vA.addEventListener('timeupdate', renderTime);
   vA.addEventListener('play', () => { setPlayIcon(); try { if (vB.paused) vB.play().catch(() => { }); } catch (e) { /* ignore */ } });
   vB.addEventListener('play', () => { if (!vA.paused) { /* both playing */ } });
@@ -784,7 +797,15 @@
 
   window.vdCompare = {
     load: load,
-    autoload: (a, b) => { if (!window.__vdManual && !window.__vdAutoDone) { window.__vdAutoDone = true; load(a, b, true); } },
+    autoload: (a, b) => {
+      // A freshly finished render always wins: import the new pair (and autoplay), even if the
+      // user had manually picked videos earlier.
+      if (!window.__vdAutoDone) {
+        window.__vdAutoDone = true;
+        window.__vdManual = false;
+        load(a, b, true);
+      }
+    },
   };
 })();
 </script>
