@@ -587,7 +587,9 @@ function runCounted(args, dirPath, total, tick) {
 // Live-run realesr directory mode; its stdout (and on some builds stderr) carries per-frame
 // percent tokens -> frame progress. The tool is SILENT while it loads the model and computes the
 // first tiles (~3-6 s, more at high resolutions), so a heartbeat keeps the UI alive meanwhile.
-function runRealesrPct(exe, args, total, tick) {
+function runRealesrPct(exe, args, total, tick, base, prefix) {
+    base = base || 0;
+    prefix = prefix || 'Real-ESRGAN 4x…';
     return new Promise((ok, bad) => {
         const p = spawn(exe, args, { cwd: ROOT, windowsHide: true });
         trackPrep(p);
@@ -601,12 +603,12 @@ function runRealesrPct(exe, args, total, tick) {
             if (pct > last) {
                 last = pct;
                 gotProgress = true;
-                tick(Math.round(pct / 100 * total), 'Real-ESRGAN 4x…');
+                tick(base + Math.round(pct / 100 * total), prefix);
             }
         };
         const hb = setInterval(() => {
             if (!gotProgress) {
-                tick(0, 'Real-ESRGAN 4x… 正在加载模型/计算首帧，请稍候');
+                tick(base, prefix + ' 正在加载模型/计算首帧，请稍候');
             }
         }, 3000);
         p.stdout.on('data', push);
@@ -629,74 +631,85 @@ async function preEnhanceRun(inputPath, startS, endS, onStats, outState) {
     if (!pi.ok || !pi.info.width) throw new Error('预处理: 无法探测输入视频');
     const W = pi.info.width, H = pi.info.height;
     const fps = pi.info.fps > 0 ? pi.info.fps : 30;
-    // Temp-frame optimisation: cap the resolution fed to realesr so the intermediate 4x frames
-    // stay small (1080p+ sources otherwise become 8K+ single frames, i.e. ~16x the pixels we
-    // actually need, and that I/O is what made prep look frozen). Decode to long edge <= 1280;
-    // the final re-encode always lands back on the ORIGINAL W x H.
+    const full = pi.info.duration || 0;
+    const wStart = startS > 0 ? startS : 0;
+    const wEnd = endS > 0 ? Math.min(endS, full > 0 ? full : endS) : full;
+    const est = Math.max(1, Math.round((wEnd - wStart) * fps));
+    // Cap fed resolution (temp-frame optimisation; final output still original W x H)
     const CAP = 1280;
     let dW = W, dH = H;
     if ((W >= H ? W : H) > CAP) {
         if (W >= H) { dW = CAP; dH = Math.max(2, Math.round(H * CAP / W / 2) * 2); }
         else { dH = CAP; dW = Math.max(2, Math.round(W * CAP / H / 2) * 2); }
     }
-    const full = pi.info.duration || 0;
-    const wStart = startS > 0 ? startS : 0;
-    const wEnd = endS > 0 ? Math.min(endS, full > 0 ? full : endS) : full;
-    const estFrames = Math.max(1, Math.round((wEnd - wStart) * fps));
+    const scaleF = (dW !== W || dH !== H) ? ['-vf', 'scale=' + dW + ':' + dH + ':flags=lanczos'] : [];
     fs.mkdirSync(FRAME_DIR, { recursive: true });
     const ts = Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
-    const dirF = path.join(FRAME_DIR, 'preF_' + ts);
-    const dirO = path.join(FRAME_DIR, 'preO_' + ts);
-    if (outState.dirs) outState.dirs.push(dirF, dirO);
-    fs.mkdirSync(dirF, { recursive: true });
-    fs.mkdirSync(dirO, { recursive: true });
     const outMp4 = path.join(FRAME_DIR, 'pre_' + ts + '.mp4');
     const outA = path.join(FRAME_DIR, 'pre_' + ts + '_a.mp4');
     const wipe = (d) => rmDirQuiet(d, 5);
-    const tick = (done, txt) => { if (onStats) onStats(done, estFrames, txt || ''); };
+    const tick = (done, txt) => { if (onStats) onStats(Math.min(done, est), est, txt || ''); };
+    const CH = 48; // frames per chunk: bounds temp-dir peak instead of the whole film at once
+    const chunks = Math.max(1, Math.ceil(est / CH));
+    const segments = [];
+    let doneBase = 0;
     try {
-        console.log('[prep] stage=decode start');
-        tick(0, '解码源帧…');
-        const dec = ['-i', inputPath, '-start_number', '0'];
-        if (wStart > 0) dec.push('-ss', String(wStart));
-        if (wEnd > 0 && full > 0) dec.push('-to', String(wEnd));
-        if (dW !== W || dH !== H) {
-            dec.push('-vf', 'scale=' + dW + ':' + dH + ':flags=lanczos');
+        for (let c = 0; c < chunks; ++c) {
+            if (current && current.cancelled) throw new Error('cancelled');
+            const dirF = path.join(FRAME_DIR, 'preF_' + ts + '_' + c);
+            const dirO = path.join(FRAME_DIR, 'preO_' + ts + '_' + c);
+            if (outState.dirs) outState.dirs.push(dirF, dirO);
+            fs.mkdirSync(dirF, { recursive: true });
+            fs.mkdirSync(dirO, { recursive: true });
+            // 1) decode this chunk from the source (fast input seek, capped resolution)
+            const segT = (c * CH) / fps;
+            const dec = ['-ss', (wStart + segT).toFixed(3), '-i', inputPath,
+                         '-frames:v', String(CH), ...scaleF, '-q:v', '2',
+                         path.join(dirF, 'f_%06d.jpg')];
+            tick(doneBase, `分块解码 ${c + 1}/${chunks}…`);
+            await runFfmpeg(dec);
+            let nf = 0;
+            try { nf = fs.readdirSync(dirF).length; } catch (e) { /* ignore */ }
+            if (nf === 0) { wipe(dirF); wipe(dirO); break; }
+            // 2) realesr over this chunk only
+            tick(doneBase, `Real-ESRGAN ${c + 1}/${chunks}…`);
+            await runRealesrPct(exe, ['-i', dirF, '-o', dirO, '-n', model, '-s', '4',
+                                      '-f', 'jpg', '-j', '4:4:4'],
+                                nf, (d, t) => tick(d, t), doneBase,
+                                `Real-ESRGAN ${c + 1}/${chunks}…`);
+            // 3) downscale back to source res and append into a lossless segment
+            const seg = path.join(FRAME_DIR, 'pre_' + ts + '_seg' + c + '.mp4');
+            tick(doneBase, `编码块 ${c + 1}/${chunks}…`);
+            await runFfmpegProgress(['-framerate', String(fps),
+                                     '-i', path.join(dirO, 'f_%06d.jpg'),
+                                     '-vf', 'scale=' + W + ':' + H + ':flags=lanczos',
+                                     '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-qp', '0',
+                                     '-preset', 'ultrafast', seg],
+                                    nf, (d, t) => tick(d, `编码块 ${c + 1}/${chunks}…`), '');
+            segments.push(seg);
+            doneBase += nf;
+            // 4) free this chunk's frames immediately (keeps temp peak small)
+            wipe(dirF); wipe(dirO);
         }
-        dec.push('-vsync', '0', '-fps_mode', 'passthrough', '-q:v', '2',
-                 path.join(dirF, 'f_%06d.jpg'));
-        await runCounted(dec, dirF, estFrames, tick);
-        let frames = 0;
-        try { frames = fs.readdirSync(dirF).length; } catch (e) { /* ignore */ }
-        if (frames === 0) throw new Error('预处理: 没有解出任何帧(窗口为空?)');
-        tick(0, 'Real-ESRGAN 4x…');
-        // jpg output (vs png) halves the write/encode cost of the 4x frames -- PNG at 8K+ can
-        // hit 100MB+/frame and looks like a freeze on real footage. Lossy jpg is fine: the frame
-        // is scaled back down to source res immediately, and DLSSNR re-renders anyway.
-        await runRealesrPct(exe, ['-i', dirF, '-o', dirO, '-n', model, '-s', '4', '-f', 'jpg',
-                                  '-j', '4:4:4'],
-                            frames, (d, t) => tick(d, 'Real-ESRGAN 4x…'));
-        tick(0, '缩回原尺寸并无损编码…');
-        console.log('[prep] stage=encode frames=' + frames);
-        await runFfmpegProgress(['-framerate', String(fps), '-i', path.join(dirO, 'f_%06d.jpg'),
-                                 '-vf', 'scale=' + W + ':' + H + ':flags=lanczos',
-                                 '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-qp', '0',
-                                 '-preset', 'ultrafast', outMp4],
-                                frames, (d, t) => tick(d, '缩回原尺寸并无损编码…'), '');
-        tick(frames, '混入原音频…');
+        if (segments.length === 0) throw new Error('预处理: 没有解出任何帧(窗口为空?)');
+        // 5) concat lossless segments + audio remux
+        const list = path.join(FRAME_DIR, 'pre_' + ts + '_list.txt');
+        fs.writeFileSync(list, segments.map((s) => "file '" + s.replace(/\\/g, '/') + "'").join('\n'));
+        await runFfmpeg(['-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', outMp4]);
         await runFfmpeg(['-i', outMp4, '-i', inputPath,
                          '-map', '0:v:0', '-map', '1:a:0?',
                          '-c', 'copy', '-shortest', outA]);
-        console.log('[prep] stage=done frames=' + frames);
         try { fs.unlinkSync(outMp4); } catch (e) { /* ignore */ }
-        wipe(dirF); wipe(dirO);
-        setTimeout(() => { wipe(dirF, 2); wipe(dirO, 2); }, 6000);  // late safety net
-        tick(frames, '');
+        try { fs.unlinkSync(list); } catch (e) { /* ignore */ }
+        segments.forEach((s) => { try { fs.unlinkSync(s); } catch (e) { /* ignore */ } });
+        console.log('[prep] stage=done frames=' + doneBase);
+        tick(doneBase, '');
         return { file: outA, width: W, height: H, fps };
     } catch (e) {
-        wipe(dirF); wipe(dirO);
         try { fs.unlinkSync(outMp4); } catch (e2) { /* ignore */ }
         try { fs.unlinkSync(outA); } catch (e2) { /* ignore */ }
+        try { fs.unlinkSync(path.join(FRAME_DIR, 'pre_' + ts + '_list.txt')); } catch (e2) { /* ignore */ }
+        segments.forEach((s) => { try { fs.unlinkSync(s); } catch (e2) { /* ignore */ } });
         throw e;
     }
 }
