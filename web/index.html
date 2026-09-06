@@ -406,48 +406,8 @@
 
   <!-- ------------------------------------------------------------ center -->
   <div>
-    <div class="card">
-      <h2>选帧与时间范围</h2>
-        <div class="field">
-          <span>时间范围</span>
-          <div style="display:flex; gap:8px;">
-            <input type="number" id="startTime" value="0" min="0" step="0.1" style="flex:1;" title="起始时间（秒），0 = 从头">
-            <input type="number" id="endTime" value="0" min="0" step="0.1" style="flex:1;" title="结束时间（秒），0 = 到结尾">
-          </div>
-          <div class="meta" id="rangeInfo" style="margin-top:2px;">0 到结尾（整段）</div>
-      </div>
-      <video id="cmpVideo" controls playsinline muted preload="metadata"
-             style="width:100%; max-height:38vh; background:#000; border-radius:8px; margin-top:10px;"
-             title="拖动进度条选帧,或用下方按钮把当前时间设为起点/终点"></video>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
-        <button class="btn primary" id="setCmpFrameBtn">渲染当前帧进行预览</button>
-        <button class="btn" id="pickStartBtn">选择当前时间为起点</button>
-        <button class="btn" id="pickEndBtn">选择当前时间为终点</button>
-        <span class="meta" id="cmpStatus">先在播放器里选帧:拖动进度条到想要的画面后点击按钮</span>
-      </div>
-      <div class="btn-row">
-        <button class="btn primary" id="startBtn">开始处理</button>
-        <button class="btn danger" id="cancelBtn" disabled>停止</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>对比预览</h2>
-      <div class="compare empty" id="compareBox">
-        <div class="img-stage" id="cmpStage">
-          <img class="orig" id="cmpOrigImg" alt="原图" src="">
-          <div class="render-layer" id="cmpRenderLayer"><img id="cmpRenderImg" alt="渲染后" src=""></div>
-          <div class="divider" id="cmpDivider"></div>
-        </div>
-        <div class="compare-labels">
-          <span>渲染前</span>
-          <span>渲染后</span>
-        </div>
-      </div>
-    </div>
-
     <div class="card" id="exportCard">
-      <h2>视频导出与预览</h2>
+      <h2>渲染与导出设置</h2>
       <div style="display:grid; grid-template-columns:150px minmax(300px,350px); gap:12px; align-items:end;">
         <label class="field">
           <span>导出编码器</span>
@@ -468,6 +428,30 @@
           </div>
         </label>
       </div>
+      <div class="btn-row" style="margin-top:10px;">
+        <button class="btn primary" id="startBtn">开始处理</button>
+        <button class="btn danger" id="cancelBtn" disabled>停止</button>
+        <button class="btn" id="exportMoreBtn" disabled title="渲染完成后可按其它格式再导出">另导出为…</button>
+      </div>
+      <hr style="margin:14px 0; border:0; border-top:1px solid var(--line);">
+      <div class="field">
+        <span>时间范围</span>
+        <div style="display:flex; gap:8px;">
+          <input type="number" id="startTime" value="0" min="0" step="0.1" style="flex:1;" title="起始时间（秒），0 = 从头">
+          <input type="number" id="endTime" value="0" min="0" step="0.1" style="flex:1;" title="结束时间（秒），0 = 到结尾">
+        </div>
+        <div class="meta" id="rangeInfo" style="margin-top:2px;">0 到结尾（整段）</div>
+      </div>
+      <video id="cmpVideo" controls playsinline muted preload="metadata"
+             style="width:100%; max-height:38vh; background:#000; border-radius:8px; margin-top:10px;"
+             title="拖动进度条选帧,或用下方按钮把当前时间设为起点/终点"></video>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
+        <button class="btn primary" id="setCmpFrameBtn">渲染当前帧进行预览</button>
+        <button class="btn" id="pickStartBtn">选择当前时间为起点</button>
+        <button class="btn" id="pickEndBtn">选择当前时间为终点</button>
+        <span class="meta" id="cmpStatus">先在播放器里选帧:拖动进度条到想要的画面后点击按钮</span>
+      </div>
+      <hr style="margin:14px 0; border:0; border-top:1px solid var(--line);">
       <video id="resultVideo" controls playsinline preload="metadata"
              style="display:none; width:100%; max-height:38vh; background:#000; border-radius:8px; margin-top:10px;"></video>
       <div id="exportProgressBox" style="margin-top:10px; display:none;">
@@ -478,9 +462,6 @@
       <div class="meta" id="exportLinks" style="margin-top:6px; display:none;">
         <a id="exportLink" href="#" target="_blank">打开导出文件</a>
         <span> · </span><a id="exportDown" href="#" download>下载</a>
-      </div>
-      <div style="margin-top:10px;">
-        <button class="btn" id="exportMoreBtn">另导出为…</button>
       </div>
       <div id="exportMoreBox"
            style="display:none; margin-top:8px; padding:10px; background:#161a22; border:1px solid var(--line); border-radius:8px;">
@@ -521,6 +502,21 @@
     <div class="card" id="resultCard" style="display:none;">
       <h2>结果</h2>
       <div class="meta" id="resultInfo"></div>
+    </div>
+
+    <div class="card">
+      <h2>对比预览</h2>
+      <div class="compare empty" id="compareBox">
+        <div class="img-stage" id="cmpStage">
+          <img class="orig" id="cmpOrigImg" alt="原图" src="">
+          <div class="render-layer" id="cmpRenderLayer"><img id="cmpRenderImg" alt="渲染后" src=""></div>
+          <div class="divider" id="cmpDivider"></div>
+        </div>
+        <div class="compare-labels">
+          <span>渲染前</span>
+          <span>渲染后</span>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -910,6 +906,7 @@ function renderStatus(s) {
         $('resultCard').style.display = '';
         $('resultInfo').textContent = '无损主片(HEVC10)：' + s.master;
         window.__master = s.master;
+        $('exportMoreBtn').disabled = false;
         if (s.preview) {
           const v = $('resultVideo');
           v.src = '/api/video?path=' + encodeURIComponent(s.preview);
@@ -1111,6 +1108,9 @@ $('startBtn').addEventListener('click', async () => {
   $('exportProgressBox').style.display = 'none';
   $('exportMsg').style.display = 'none';
   $('exportLinks').style.display = 'none';
+  $('exportMoreBox').style.display = 'none';
+  $('export2Status').textContent = '';
+  $('exportMoreBtn').disabled = true;
   const rv = $('resultVideo');
   rv.removeAttribute('src');
   rv.style.display = 'none';
