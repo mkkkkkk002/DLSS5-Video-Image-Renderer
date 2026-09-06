@@ -528,38 +528,36 @@ function runCounted(args, dirPath, total, tick) {
     });
 }
 
-// Live-run realesr directory mode; its stdout carries per-frame percent -> frame progress.
-// The tool is SILENT while it loads the model and computes the first tiles (~3-6 s, more at high
-// resolutions), so a heartbeat keeps the UI from looking stuck during that window.
+// Live-run realesr directory mode; its stdout (and on some builds stderr) carries per-frame
+// percent tokens -> frame progress. The tool is SILENT while it loads the model and computes the
+// first tiles (~3-6 s, more at high resolutions), so a heartbeat keeps the UI alive meanwhile.
 function runRealesrPct(exe, args, total, tick) {
     return new Promise((ok, bad) => {
         const p = spawn(exe, args, { cwd: ROOT, windowsHide: true });
-        let buf = '';
         let last = 0;
         let gotProgress = false;
-        const hb = setInterval(() => {
-            if (!gotProgress) {
-                tick(0, 'Real-ESRGAN 4x… 正在加载模型/计算首帧，请稍候');
-            }
-        }, 3000);
-        p.stdout.on('data', (c) => {
-            buf += c.toString('utf8');
-            const m = buf.match(/(\d+(?:\.\d+)?)\s*%/g);
-            if (m) { buf = buf.slice(buf.length - 8); }
-            const tail = buf.match(/(\d+(?:\.\d+)?)\s*%\s*$/);
-            const pct = tail ? parseFloat(tail[1]) : 0;
+        const push = (chunk) => {
+            const txt = chunk.toString('utf8');
+            const all = txt.match(/(\d+(?:\.\d+)?)\s*%/g);
+            if (!all) return;
+            const pct = parseFloat(all[all.length - 1].replace('%', '').trim());
             if (pct > last) {
                 last = pct;
                 gotProgress = true;
                 tick(Math.round(pct / 100 * total), 'Real-ESRGAN 4x…');
             }
-        });
-        let err = '';
-        p.stderr.on('data', (c) => { err += c.toString('utf8'); });
+        };
+        const hb = setInterval(() => {
+            if (!gotProgress) {
+                tick(0, 'Real-ESRGAN 4x… 正在加载模型/计算首帧，请稍候');
+            }
+        }, 3000);
+        p.stdout.on('data', push);
+        p.stderr.on('data', push);   // percent may arrive on stderr on some builds
         p.on('close', (code) => {
             clearInterval(hb);
             if (code === 0) { tick(total, ''); return ok(); }
-            bad(new Error('tool exit ' + code + ' — ' + err.trim().split(/\r?\n/).filter(Boolean).slice(-4).join(' | ')));
+            bad(new Error('tool exit ' + code));
         });
         p.on('error', (e) => { clearInterval(hb); bad(e); });
     });
