@@ -503,14 +503,15 @@ function startJob(cfg) {
         return { ok: false, error: 'a job is already running' };
     }
 
-    // Two-stage flow: rendering always writes a LOSSLESS HEVC10 master under outputs/. The user
-    // picks the final encoder afterwards (/api/export), which is a fast transcode -- never a
-    // model re-run. The final file name is therefore not known at render time.
+    // Two-stage flow: rendering always writes a LOSSLESS HEVC10 master. The master lives in the
+    // frame/cache dir (cleaned on shutdown/restart -- see the guard), NOT in outputs/, because it
+    // is only an export source; the user-visible final files come from /api/export later.
     if (!fs.existsSync(findEngine())) {
         return { ok: false, error: 'engine not found: ' + findEngine() };
     }
+    fs.mkdirSync(FRAME_DIR, { recursive: true });
     const ext = path.extname(cfg.input) || '.mp4';
-    const masterPath = uniquePath(OUTPUTS_DIR, 'master_' + path.basename(cfg.input, ext) + ext);
+    const masterPath = uniquePath(FRAME_DIR, 'master_' + path.basename(cfg.input, ext) + ext);
 
     const job = {
         id: nextId++,

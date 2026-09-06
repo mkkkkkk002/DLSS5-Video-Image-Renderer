@@ -459,20 +459,6 @@
         <button class="btn danger" id="cancelBtn" disabled>停止</button>
         <button class="btn" id="exportMoreBtn" disabled title="渲染完成后可按其它格式再导出">另导出为…</button>
       </div>
-      <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
-      <h3 style="font-size:13px; font-weight:600; color:var(--dim); margin:0 0 6px 0;">渲染进度</h3>
-      <div class="bar"><i id="bar"></i></div>
-      <div class="status" id="statusText">空闲</div>
-      <div class="meta" id="progStats" style="margin-top:2px; display:none;"></div>
-      <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
-      <video id="resultVideo" controls playsinline preload="metadata"
-             style="display:none; width:100%; max-height:38vh; background:#000; border-radius:8px; margin-top:8px;"></video>
-      <div id="exportProgressBox" style="margin-top:6px; display:none;">
-        <h3 style="font-size:13px; font-weight:600; color:var(--dim); margin:0 0 6px 0;">解码进度</h3>
-        <div class="bar"><i id="exportBar"></i></div>
-        <div class="status" id="exportPctTxt">0%</div>
-      </div>
-      <div class="status done" id="exportMsg" style="margin-top:6px; display:none;"></div>
       <div id="exportMoreBox"
            style="display:none; margin-top:6px; padding:8px; background:#161a22; border:1px solid var(--line); border-radius:8px;">
         <div style="display:grid; grid-template-columns:150px minmax(300px,350px); gap:12px; align-items:end;">
@@ -500,6 +486,20 @@
           <span class="meta" id="export2Status"></span>
         </div>
       </div>
+      <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
+      <h3 style="font-size:13px; font-weight:600; color:var(--dim); margin:0 0 6px 0;">渲染进度</h3>
+      <div class="bar"><i id="bar"></i></div>
+      <div class="status" id="statusText">空闲</div>
+      <div class="meta" id="progStats" style="margin-top:2px; display:none;"></div>
+      <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
+      <video id="resultVideo" controls playsinline preload="metadata"
+             style="display:none; width:100%; max-height:38vh; background:#000; border-radius:8px; margin-top:8px;"></video>
+      <div id="exportProgressBox" style="margin-top:6px;">
+        <h3 style="font-size:13px; font-weight:600; color:var(--dim); margin:0 0 6px 0;">导出进度</h3>
+        <div class="bar"><i id="exportBar"></i></div>
+        <div class="status" id="exportPctTxt">0%</div>
+      </div>
+      <div class="status done" id="exportMsg" style="margin-top:6px; display:none;"></div>
     </div>
 
     <div class="card">
@@ -1083,7 +1083,8 @@ $('startBtn').addEventListener('click', async () => {
   $('startBtn').disabled = true;
   $('cancelBtn').disabled = false;
   $('statusText').textContent = '启动中…';
-  $('exportProgressBox').style.display = 'none';
+  $('exportBar').style.width = '0%';
+  $('exportPctTxt').textContent = '0%';
   $('exportMsg').style.display = 'none';
   $('exportMoreBox').style.display = 'none';
   $('export2Status').textContent = '';
