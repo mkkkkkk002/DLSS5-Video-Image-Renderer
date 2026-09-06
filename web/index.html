@@ -501,7 +501,7 @@
     <div class="card" id="vdCard" style="margin-top:10px;">
       <h2>视频对比</h2>
       <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
-        <button class="btn" id="vdPickA" title="选择渲染前的视频(左/上层)">选渲染前…</button>
+        <button class="btn" id="vdPickA" title="选择原视频(左/上层)">选原视频…</button>
         <button class="btn" id="vdPickB" title="选择渲染后的视频(右/下层)">选渲染后…</button>
         <button class="btn" id="vdSwap" title="交换左右">⇄ 交换</button>
         <button class="btn" id="vdZoom" style="margin-left:auto;" title="全屏放大对比,拖动分隔条细看">放大对比</button>
@@ -513,8 +513,8 @@
           <div class="divider" id="vdDivider"></div>
         </div>
         <div class="compare-labels">
-          <span>渲染前</span>
-          <span>渲染后</span>
+          <span id="vdLabL">原视频</span>
+          <span id="vdLabR">渲染后</span>
         </div>
       </div>
       <div class="vctrl" id="vdCtrl" hidden>
@@ -523,7 +523,7 @@
         <input type="range" id="vdSeek" min="0" max="1000" step="1" value="0" title="同步进度条">
         <span class="sp"></span>
         <button class="btn" id="vdMute" title="静音渲染后音频">🔊</button>
-        <input type="range" id="vdVol" min="0" max="100" value="100" title="渲染后音量(渲染前静音,避免双声道回响)">
+        <input type="range" id="vdVol" min="0" max="100" value="100" title="渲染后音量(原视频静音,避免双声道回响)">
       </div>
       <div class="status" id="vdStatus">渲染完成会自动载入前后视频;也可手动选择。拖动画面左右对比 · 下方进度条同步播放</div>
     </div>
@@ -600,20 +600,33 @@
   const onReady = (side) => { ready[side] = true; if (ready.a && ready.b && !inited) {
       inited = true;
       ctrl.hidden = false;
-      st.textContent = '拖动画面左右对比 · 下方进度条同步播放 · 渲染前已静音';
+      st.textContent = '拖动画面左右对比 · 左=原视频 · 下方进度条同步播放(原视频静音)';
       syncTo(vB.currentTime || 0);
     } };
 
-  function load(a, b, auto) {
-    if (!a || !b) return;
-    if (!auto) window.__vdManual = true;
+  let roleA = null, roleB = null, flipped = false;   // roleA/orig & roleB/rendered
+  function applyLabels() {
+    const leftOrig = !flipped;
+    $('vdLabL').textContent = leftOrig ? '原视频' : '渲染后';
+    $('vdLabR').textContent = leftOrig ? '渲染后' : '原视频';
+  }
+  function applyLayout() {
+    const topSrc = flipped ? roleB : roleA;      // top/left layer
+    const baseSrc = flipped ? roleA : roleB;     // base/right layer
     ready = { a: false, b: false }; inited = false;
-    vB.src = vurl(a); vA.src = vurl(b);
-    vB.muted = true;                 // same audio usually — keep only the rendered track audible
+    vB.src = vurl(topSrc); vA.src = vurl(baseSrc);
+    vB.muted = true;                             // keep only the rendered track audible
+    applyLabels();
     box.classList.remove('empty');
     ctrl.hidden = true;
     st.textContent = '加载视频…';
     playB.textContent = '▶';
+  }
+  function load(a, b, auto) {
+    if (!a || !b) return;
+    if (!auto) window.__vdManual = true;
+    roleA = a; roleB = b; flipped = false;
+    applyLayout();
   }
   function syncTo(t) {
     if (syncing) return;
@@ -696,7 +709,11 @@
     const other = srcOf(vB);
     load(other || r.path, r.path);
   });
-  $('vdSwap').addEventListener('click', () => { const a = srcOf(vA), b = srcOf(vB); if (a && b) load(b, a); });
+  $('vdSwap').addEventListener('click', () => {
+    if (!roleA || !roleB) return;
+    flipped = !flipped;
+    applyLayout();
+  });
 
   // Full-screen zoom compare: reuses the SAME dom/stage/scrubber/divider (no duplicated state).
   const vdCard = $('vdCard'), zoomB = $('vdZoom');
