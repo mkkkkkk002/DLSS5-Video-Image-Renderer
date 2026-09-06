@@ -657,23 +657,10 @@ function applyInputPath(path, name, isTmp) {
   loadCmpPlayer(path);
 }
 
-// Fill the output field with <ROOT>/outputs/nr_<original-name>.<ext> when it is still empty.
-// Pure client-side; never touches the server and never prints status text next to the picker.
-function autoFillOutput() {
-  const inp = $('input').value.trim();
-  if (!inp) return;
-  if (!$('output').value.trim()) {
-    const nm = lastOrigName || inp;
-    const extM = nm.match(/\.[^./\\]+$/);
-    const stem = nm.replace(/^.*[\\/]/, '').replace(/\.[^./\\]+$/, '') || 'video';
-    const ext = extM ? extM[0] : (inp.match(/\.[^./\\]+$/) || ['.mp4'])[0];
-    if (APP_OUTPUTS) {
-      const sep = APP_OUTPUTS.includes('\\') ? '\\' : '/';
-      const tail = /[\\/]$/.test(APP_OUTPUTS) ? '' : sep;
-      $('output').value = APP_OUTPUTS + tail + 'nr_' + stem + ext;
-    }
-  }
-}
+// Legacy: used to pre-fill the output field with outputs/nr_<name>.<ext>. With the two-stage
+// export the output field holds a FOLDER only (or stays empty = default outputs/) and the file
+// name belongs to 「保存的文件名」-- so this is intentionally a no-op now.
+function autoFillOutput() { /* no-op: keep callers happy */ }
 
 // Points the compare player at the chosen video so the user can scrub to the frame they want.
 function loadCmpPlayer(path) {
