@@ -484,10 +484,10 @@
       </div>
       <div id="exportMoreBox"
            style="display:none; margin-top:8px; padding:10px; background:#161a22; border:1px solid var(--line); border-radius:8px;">
-        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+        <div style="display:grid; grid-template-columns:150px minmax(300px,350px); gap:12px; align-items:end;">
           <label class="field">
             <span>新的编码方式</span>
-            <select id="exportEnc2">
+            <select id="exportEnc2" style="width:100%;">
               <option value="h264_nvenc">h264_nvenc · 8bit（最快、最兼容）</option>
               <option value="hevc_nvenc">hevc_nvenc · 8bit（小体积、需较新播放器）</option>
               <option value="libx264">libx264 · 8bit（软编、画质高、慢）</option>
@@ -498,7 +498,10 @@
           </label>
           <label class="field">
             <span>新的输出路径</span>
-            <input type="text" id="exportPath2" placeholder="留空 = <项目根>/outputs/">
+            <div style="display:flex; gap:8px;">
+              <input type="text" id="exportPath2" placeholder="留空 = outputs/" style="flex:1;">
+              <button class="btn" id="outputPickBtn2" style="flex:0 0 auto;">选择文件夹…</button>
+            </div>
           </label>
         </div>
         <div style="display:flex; gap:8px; align-items:center; margin-top:8px;">
@@ -1070,6 +1073,22 @@ $('export2Btn').addEventListener('click', () => {
   const enc = $('exportEnc2').value;
   const p = $('exportPath2').value.trim();
   startExport(enc, p);
+});
+
+$('outputPickBtn2').addEventListener('click', async () => {
+  const input = $('input').value.trim();
+  try {
+    const r = await fetch('/api/save-file?input=' + encodeURIComponent(input)).then((x) => x.json());
+    if (r.ok) {
+      const sep = r.dir.includes('\\') ? '\\' : '/';
+      const tail = r.dir.endsWith('\\') || r.dir.endsWith('/') ? '' : sep;
+      $('exportPath2').value = r.dir + tail;
+    } else if (!r.cancelled) {
+      logError('选择输出文件夹失败: ' + (r.error || 'unknown'));
+    }
+  } catch (e) {
+    logError('选择输出文件夹失败: ' + e.message);
+  }
 });
 
 $('startBtn').addEventListener('click', async () => {
