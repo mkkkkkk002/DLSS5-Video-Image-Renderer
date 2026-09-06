@@ -219,6 +219,8 @@ function runFileDialog(scriptBody, valueExpr) {
             // DPI awareness first: without it WinForms dialogs render small/blurry on scaled displays
             "try { if (-not ('PInvoke.Dpi' -as [type])) { Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware();' -Name Dpi -Namespace PInvoke } } catch { }; " +
             "try { [PInvoke.Dpi]::SetProcessDPIAware() | Out-Null } catch { }; " +
+            "try { if (-not ('PInvoke.Mui' -as [type])) { Add-Type -MemberDefinition '[DllImport(\"kernel32.dll\", CharSet = CharSet.Unicode)] public static extern bool SetProcessPreferredUILanguages(uint dwFlags, string pwszLanguagesBuffer, ref uint pulNumLanguages);' -Name Mui -Namespace PInvoke } } catch { }; " +
+            "try { $n = [uint32]0; [PInvoke.Mui]::SetProcessPreferredUILanguages(8, \"zh-CN`0\", [ref]$n) | Out-Null } catch { }; " +
             // force Chinese UI strings for the managed dialog parts (buttons/labels of FolderBrowserDialog etc.)
             "try { $c = New-Object System.Globalization.CultureInfo('zh-CN'); " +
             "[System.Threading.Thread]::CurrentThread.CurrentUICulture = $c; " +
@@ -847,13 +849,19 @@ const server = http.createServer(async (req, res) => {
         }
         const input = url.searchParams.get('input') || '';
         let dir = input ? path.dirname(input) : '';
-        const initial = dir ? "$dlg.SelectedPath = '" + dir.replace(/'/g, "''") + "'; " : '';
+        const initial = dir ? "$dlg.InitialDirectory = '" + dir.replace(/'/g, "''") + "'; " : '';
+        // Modern (Vista-style, resizable, DPI-aware) folder picker: an OpenFileDialog in
+        // "pick a folder" mode. The old FolderBrowserDialog is a small legacy tree window.
         const body =
-            "$dlg = New-Object System.Windows.Forms.FolderBrowserDialog; " +
-            "$dlg.Description = '选择输出文件夹(文件名会自动加上 nr_ 前缀)'; " +
-            "$dlg.ShowNewFolderButton = $true; " +
+            "$dlg = New-Object System.Windows.Forms.OpenFileDialog; " +
+            "$dlg.Title = '选择输出文件夹(进入目标文件夹后点“打开”)'; " +
+            "$dlg.CheckFileExists = $false; $dlg.CheckPathExists = $true; " +
+            "$dlg.ValidateNames = $false; " +
+            "$dlg.Filter = '文件夹|*.folder'; " +
+            "$dlg.FileName = '选择此文件夹'; " +
             initial;
-        const r = await runFileDialog(body, '$($dlg.SelectedPath)');
+        const r = await runFileDialog(body,
+            "$(if ([System.IO.Directory]::Exists($dlg.FileName)) { $dlg.FileName } else { Split-Path -Parent $dlg.FileName })");
         if (r.error) return sendJson(res, 500, { ok: false, error: r.error });
         if (r.cancelled) return sendJson(res, 200, { ok: false, cancelled: true });
         return sendJson(res, 200, { ok: true, dir: r.path });
