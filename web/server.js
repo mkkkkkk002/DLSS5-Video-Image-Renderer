@@ -892,14 +892,21 @@ const server = http.createServer(async (req, res) => {
         // Output path + optional custom file name: blank file name keeps the default
         // (nr_<orig>_<encoder>.mp4); a typed name is honoured (auto .mp4 if no extension).
         const stem = path.basename(master).replace(/^master_/, 'nr_').replace(/\.[^.]+$/, '');
+        // When a custom file name is given, 「保存的文件名」owns the basename and the output
+        // field is a folder only -- even if the user pasted something that looks like a file
+        // path (its parent dir is used), so the two controls never fight.
         const customName = (body.fileName || '').trim();
+        let outputRaw = (body.output || '').trim();
+        if (customName && outputRaw && /\.[A-Za-z0-9]{1,5}$/.test(path.basename(outputRaw))) {
+            outputRaw = path.dirname(outputRaw);
+        }
         let defaultName;
         if (customName) {
             defaultName = /\.[A-Za-z0-9]{1,5}$/.test(customName) ? customName : customName + '.mp4';
         } else {
             defaultName = `${stem}_${encoder}.mp4`;
         }
-        const finalOut = resolveExportPath(body.output, defaultName);
+        const finalOut = resolveExportPath(outputRaw, defaultName);
         fs.mkdirSync(path.dirname(finalOut), { recursive: true });
 
         exporter.running = true;

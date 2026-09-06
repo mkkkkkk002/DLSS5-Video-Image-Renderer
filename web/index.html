@@ -451,7 +451,7 @@
       </div>
             <label class="field" style="margin-top:2px;">
         <span>保存的文件名</span>
-        <input type="text" id="exportName" placeholder="留空 = 默认名带 nr_ 前缀（如 nr_原文件名_编码.mp4）">
+        <input type="text" id="exportName" placeholder="留空 = 默认名（自动带 nr_ 前缀）">
       </label>
       <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
       <label style="display:flex; gap:6px; align-items:center;">
@@ -787,16 +787,14 @@ $('filePickerBtn').addEventListener('click', async () => {
 // filename inside it and fill the output field. The stem prefers the original filename (so a
 // dragged-in copy does not leak its random temp name into the output).
 $('outputPickBtn').addEventListener('click', async () => {
-  const input = $('input').value.trim();
   try {
-    const r = await fetch('/api/save-file?input=' + encodeURIComponent(input)).then((x) => x.json());
+    const r = await fetch('/api/save-file?input=' + encodeURIComponent($('input').value.trim()))
+      .then((x) => x.json());
     if (r.ok) {
-      const nm = lastOrigName || input;
-      const ext = (nm ? nm.match(/\.[^./\\]+$/) : null)?.[0] || '.mp4';
-      const stem = nm ? nm.replace(/^.*[\\/]/, '').replace(/\.[^./\\]+$/, '') : 'output';
       const sep = r.dir.includes('\\') ? '\\' : '/';
       const tail = r.dir.endsWith('\\') || r.dir.endsWith('/') ? '' : sep;
-      $('output').value = r.dir + tail + 'nr_' + stem + ext;
+      // Folder only -- the final file name comes from 「保存的文件名」.
+      $('output').value = r.dir + tail;
     } else if (!r.cancelled) {
       logError('选择输出文件夹失败: ' + (r.error || 'unknown'));
     }
