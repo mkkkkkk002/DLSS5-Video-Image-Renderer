@@ -408,6 +408,24 @@
   <div>
     <div class="card" id="exportCard">
       <h2>渲染与导出设置</h2>
+      <div class="field">
+        <span>时间范围</span>
+        <div style="display:flex; gap:8px;">
+          <input type="number" id="startTime" value="0" min="0" step="0.1" style="flex:1;" title="起始时间（秒），0 = 从头">
+          <input type="number" id="endTime" value="0" min="0" step="0.1" style="flex:1;" title="结束时间（秒），0 = 到结尾">
+        </div>
+        <div class="meta" id="rangeInfo" style="margin-top:2px;">0 到结尾（整段）</div>
+      </div>
+      <video id="cmpVideo" controls playsinline muted preload="metadata"
+             style="width:100%; max-height:38vh; background:#000; border-radius:8px; margin-top:10px;"
+             title="拖动进度条选帧,或用下方按钮把当前时间设为起点/终点"></video>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
+        <button class="btn primary" id="setCmpFrameBtn">渲染当前帧进行预览</button>
+        <button class="btn" id="pickStartBtn">选择当前时间为起点</button>
+        <button class="btn" id="pickEndBtn">选择当前时间为终点</button>
+        <span class="meta" id="cmpStatus">先在播放器里选帧:拖动进度条到想要的画面后点击按钮</span>
+      </div>
+      <hr style="margin:14px 0; border:0; border-top:1px solid var(--line);">
       <div style="display:grid; grid-template-columns:150px minmax(300px,350px); gap:12px; align-items:end;">
         <label class="field">
           <span>导出编码器</span>
@@ -428,29 +446,17 @@
           </div>
         </label>
       </div>
-      <div class="btn-row" style="margin-top:10px;">
+      <hr style="margin:14px 0; border:0; border-top:1px solid var(--line);">
+      <div class="btn-row" style="margin-top:4px;">
         <button class="btn primary" id="startBtn">开始处理</button>
         <button class="btn danger" id="cancelBtn" disabled>停止</button>
         <button class="btn" id="exportMoreBtn" disabled title="渲染完成后可按其它格式再导出">另导出为…</button>
       </div>
       <hr style="margin:14px 0; border:0; border-top:1px solid var(--line);">
-      <div class="field">
-        <span>时间范围</span>
-        <div style="display:flex; gap:8px;">
-          <input type="number" id="startTime" value="0" min="0" step="0.1" style="flex:1;" title="起始时间（秒），0 = 从头">
-          <input type="number" id="endTime" value="0" min="0" step="0.1" style="flex:1;" title="结束时间（秒），0 = 到结尾">
-        </div>
-        <div class="meta" id="rangeInfo" style="margin-top:2px;">0 到结尾（整段）</div>
-      </div>
-      <video id="cmpVideo" controls playsinline muted preload="metadata"
-             style="width:100%; max-height:38vh; background:#000; border-radius:8px; margin-top:10px;"
-             title="拖动进度条选帧,或用下方按钮把当前时间设为起点/终点"></video>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
-        <button class="btn primary" id="setCmpFrameBtn">渲染当前帧进行预览</button>
-        <button class="btn" id="pickStartBtn">选择当前时间为起点</button>
-        <button class="btn" id="pickEndBtn">选择当前时间为终点</button>
-        <span class="meta" id="cmpStatus">先在播放器里选帧:拖动进度条到想要的画面后点击按钮</span>
-      </div>
+      <h3 style="font-size:13px; font-weight:600; color:var(--dim); margin:0 0 6px 0;">渲染进度</h3>
+      <div class="bar"><i id="bar"></i></div>
+      <div class="status" id="statusText">空闲</div>
+      <div class="meta" id="progStats" style="margin-top:2px; display:none;"></div>
       <hr style="margin:14px 0; border:0; border-top:1px solid var(--line);">
       <video id="resultVideo" controls playsinline preload="metadata"
              style="display:none; width:100%; max-height:38vh; background:#000; border-radius:8px; margin-top:10px;"></video>
@@ -490,13 +496,6 @@
           <span class="meta" id="export2Status"></span>
         </div>
       </div>
-    </div>
-
-    <div class="card">
-      <h2>进度</h2>
-      <div class="bar"><i id="bar"></i></div>
-      <div class="status" id="statusText">空闲</div>
-      <div class="meta" id="progStats" style="margin-top:2px; display:none;"></div>
     </div>
 
     <div class="card" id="resultCard" style="display:none;">
