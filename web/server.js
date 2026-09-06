@@ -629,6 +629,16 @@ async function preEnhanceRun(inputPath, startS, endS, onStats, outState) {
     if (!pi.ok || !pi.info.width) throw new Error('预处理: 无法探测输入视频');
     const W = pi.info.width, H = pi.info.height;
     const fps = pi.info.fps > 0 ? pi.info.fps : 30;
+    // Temp-frame optimisation: cap the resolution fed to realesr so the intermediate 4x frames
+    // stay small (1080p+ sources otherwise become 8K+ single frames, i.e. ~16x the pixels we
+    // actually need, and that I/O is what made prep look frozen). Decode to long edge <= 1280;
+    // the final re-encode always lands back on the ORIGINAL W x H.
+    const CAP = 1280;
+    let dW = W, dH = H;
+    if ((W >= H ? W : H) > CAP) {
+        if (W >= H) { dW = CAP; dH = Math.max(2, Math.round(H * CAP / W / 2) * 2); }
+        else { dH = CAP; dW = Math.max(2, Math.round(W * CAP / H / 2) * 2); }
+    }
     const full = pi.info.duration || 0;
     const wStart = startS > 0 ? startS : 0;
     const wEnd = endS > 0 ? Math.min(endS, full > 0 ? full : endS) : full;
@@ -650,6 +660,9 @@ async function preEnhanceRun(inputPath, startS, endS, onStats, outState) {
         const dec = ['-i', inputPath, '-start_number', '0'];
         if (wStart > 0) dec.push('-ss', String(wStart));
         if (wEnd > 0 && full > 0) dec.push('-to', String(wEnd));
+        if (dW !== W || dH !== H) {
+            dec.push('-vf', 'scale=' + dW + ':' + dH + ':flags=lanczos');
+        }
         dec.push('-vsync', '0', '-fps_mode', 'passthrough', '-q:v', '2',
                  path.join(dirF, 'f_%06d.jpg'));
         await runCounted(dec, dirF, estFrames, tick);
