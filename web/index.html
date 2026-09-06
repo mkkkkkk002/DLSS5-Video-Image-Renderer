@@ -501,34 +501,35 @@
           <span>原图</span>
           <span>渲染后</span>
         </div>
-      <div class="card" id="vdCard" style="margin-top:10px;">
-        <h2>视频对比</h2>
-        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
-          <button class="btn" id="vdPickA" title="选择渲染前的视频(左/上层)">选渲染前…</button>
-          <button class="btn" id="vdPickB" title="选择渲染后的视频(右/下层)">选渲染后…</button>
-          <button class="btn" id="vdSwap" title="交换左右">⇄ 交换</button>
-        </div>
-        <div class="vcompare empty" id="vdBox">
-          <div class="vstage" id="vdStage">
-            <video id="vdAfter" playsinline preload="auto"></video>
-            <div class="vtop" id="vdTop"><video id="vdBefore" playsinline preload="auto"></video></div>
-            <div class="divider" id="vdDivider"></div>
-          </div>
-          <div class="compare-labels">
-            <span>渲染前</span>
-            <span>渲染后</span>
-          </div>
-        </div>
-        <div class="vctrl" id="vdCtrl" hidden>
-          <button class="btn" id="vdPlay" title="播放/暂停">▶</button>
-          <span class="time" id="vdTime">0:00 / 0:00</span>
-          <input type="range" id="vdSeek" min="0" max="1000" step="1" value="0" title="同步进度条">
-          <button class="btn" id="vdMute" title="静音渲染后音频">🔊</button>
-          <input type="range" id="vdVol" min="0" max="100" value="100" title="渲染后音量(渲染前静音,避免双声道回响)">
-        </div>
-        <div class="status" id="vdStatus">渲染完成会自动载入前后视频;也可手动选择。拖动画面左右对比 · 下方进度条同步播放</div>
       </div>
+    </div>
+
+    <div class="card" id="vdCard" style="margin-top:10px;">
+      <h2>视频对比</h2>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
+        <button class="btn" id="vdPickA" title="选择渲染前的视频(左/上层)">选渲染前…</button>
+        <button class="btn" id="vdPickB" title="选择渲染后的视频(右/下层)">选渲染后…</button>
+        <button class="btn" id="vdSwap" title="交换左右">⇄ 交换</button>
       </div>
+      <div class="vcompare empty" id="vdBox">
+        <div class="vstage" id="vdStage">
+          <video id="vdAfter" playsinline preload="auto"></video>
+          <div class="vtop" id="vdTop"><video id="vdBefore" playsinline preload="auto"></video></div>
+          <div class="divider" id="vdDivider"></div>
+        </div>
+        <div class="compare-labels">
+          <span>渲染前</span>
+          <span>渲染后</span>
+        </div>
+      </div>
+      <div class="vctrl" id="vdCtrl" hidden>
+        <button class="btn" id="vdPlay" title="播放/暂停">▶</button>
+        <span class="time" id="vdTime">0:00 / 0:00</span>
+        <input type="range" id="vdSeek" min="0" max="1000" step="1" value="0" title="同步进度条">
+        <button class="btn" id="vdMute" title="静音渲染后音频">🔊</button>
+        <input type="range" id="vdVol" min="0" max="100" value="100" title="渲染后音量(渲染前静音,避免双声道回响)">
+      </div>
+      <div class="status" id="vdStatus">渲染完成会自动载入前后视频;也可手动选择。拖动画面左右对比 · 下方进度条同步播放</div>
     </div>
   </div>
 
