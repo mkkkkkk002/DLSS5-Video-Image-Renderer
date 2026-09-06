@@ -737,6 +737,24 @@
   vA.addEventListener('ended', restartAll);
   vB.addEventListener('ended', () => { if (!restarting && vB.duration && vA.currentTime >= vB.duration - 0.05) restartAll(); });
 
+  // ---- diagnostics (temporary): every 5s while playing, log dropped/decoded frame deltas of
+  // both streams + the time gap, so the "one side stutters" report can be rooted in data.
+  let prevQ = { a: 0, b: 0, da: 0, db: 0, t: 0 };
+  setInterval(() => {
+    if (!vA.src || (vA.paused && vB.paused)) return;
+    let qa = null, qb = null;
+    try { qa = vA.getVideoPlaybackQuality ? vA.getVideoPlaybackQuality() : null; } catch (e) { /* ignore */ }
+    try { qb = vB.getVideoPlaybackQuality ? vB.getVideoPlaybackQuality() : null; } catch (e) { /* ignore */ }
+    const totA = qa ? qa.totalVideoFrames : 0, totB = qb ? qb.totalVideoFrames : 0;
+    const droA = qa ? qa.droppedVideoFrames : 0, droB = qb ? qb.droppedVideoFrames : 0;
+    const tA = vA.currentTime || 0, tB = vB.currentTime || 0;
+    console.info('[vd-sync] dt=' + (tA - tB).toFixed(3) +
+      's | master(A/渲染后) t=' + tA.toFixed(2) + ' drop+' + (droA - prevQ.da) + ' tot+' + (totA - prevQ.a) +
+      ' | slave(B/原视频) t=' + tB.toFixed(2) + ' drop+' + (droB - prevQ.db) + ' tot+' + (totB - prevQ.b) +
+      ' | playing A=' + (!vA.paused) + ' B=' + (!vB.paused));
+    prevQ = { a: totA, b: totB, da: droA, db: droB };
+  }, 5000);
+
   playB.addEventListener('click', async () => {
     if (!vA.src) return;
     if (vA.paused) {
