@@ -1199,13 +1199,14 @@ int wmain(int argc, wchar_t** argv) {
     } else if (opt.encoder == "libx265_10bit") {
         opt.encoder = "libx265";
         if (opt.pixFmt == "yuv420p") opt.pixFmt = "yuv420p10le";
-    } else if (opt.encoder == "hevc10_lossless") {
-        // Master intermediate for the two-stage flow: x265 lossless 10-bit. The lossless
-        // master is the export source for any later 8/10-bit encode, so re-encoding is a
-        // fast transcode, never a model re-run.
-        opt.encoder = "libx265";
+    } else if (opt.encoder == "hevc10_master" || opt.encoder == "hevc10_lossless") {
+        // Master intermediate for the two-stage flow. Near-lossless 10-bit HEVC via NVENC so the
+        // master render stays at hardware-encode speed (a lossless libx265 master serialised the
+        // CPU and dropped long renders to a few fps). Re-exporting later is a fast transcode.
+        opt.encoder = "hevc_nvenc";
         if (opt.pixFmt == "yuv420p") opt.pixFmt = "yuv420p10le";
-        opt.extraArgs += " -preset ultrafast -x265-params lossless=1:log-level=error";
+        if (opt.extraArgs.find("-profile:v") == std::string::npos)
+            opt.extraArgs += " -rc vbr -cq 14 -b:v 0 -profile:v main10";
     }
 
     if (opt.input.empty()) {
