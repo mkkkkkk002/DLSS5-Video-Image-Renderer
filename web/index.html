@@ -448,20 +448,20 @@
 
     <div class="card" id="exportCard">
       <h2>视频导出与预览</h2>
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+      <div style="display:grid; grid-template-columns:250px 1fr; gap:12px; align-items:end;">
         <label class="field">
           <span>导出编码器</span>
-          <select id="encoder">
-            <option value="h264_nvenc">h264_nvenc · 8bit 最快</option>
-            <option value="hevc_nvenc">hevc_nvenc · 8bit 体积小</option>
-            <option value="libx264">libx264 · 8bit 高质慢</option>
-            <option value="libx265">libx265 · 8bit 最小慢</option>
-            <option value="hevc_nvenc_10bit">hevc_nvenc_10bit · 10bit 快</option>
-            <option value="libx265_10bit">libx265_10bit · 10bit 小慢</option>
+          <select id="encoder" style="width:100%;">
+            <option value="h264_nvenc">h264_nvenc · 8bit（最快、最兼容）</option>
+            <option value="hevc_nvenc">hevc_nvenc · 8bit（小体积、需较新播放器）</option>
+            <option value="libx264">libx264 · 8bit（软编、画质高、慢）</option>
+            <option value="libx265">libx265 · 8bit（体积最小、CPU 慢）</option>
+            <option value="hevc_nvenc_10bit">hevc_nvenc_10bit · 10bit（无色带、GPU 快）</option>
+            <option value="libx265_10bit">libx265_10bit · 10bit（无色带、体积小、CPU 慢）</option>
           </select>
         </label>
         <label class="field">
-          <span>输出路径（留空则保存到 <项目根>/outputs/；可填文件或文件夹）</span>
+          <span>输出路径（留空=项目根 outputs/；可填文件或文件夹）</span>
           <div style="display:flex; gap:8px;">
             <input type="text" id="output" placeholder="留空 = <项目根>/outputs/" style="flex:1;">
             <button class="btn" id="outputPickBtn" style="flex:0 0 auto;">选择文件夹…</button>
@@ -488,12 +488,12 @@
           <label class="field">
             <span>新的编码方式</span>
             <select id="exportEnc2">
-              <option value="h264_nvenc">h264_nvenc · 8bit 最快</option>
-              <option value="hevc_nvenc">hevc_nvenc · 8bit 体积小</option>
-              <option value="libx264">libx264 · 8bit 高质慢</option>
-              <option value="libx265">libx265 · 8bit 最小慢</option>
-              <option value="hevc_nvenc_10bit">hevc_nvenc_10bit · 10bit 快</option>
-              <option value="libx265_10bit">libx265_10bit · 10bit 小慢</option>
+              <option value="h264_nvenc">h264_nvenc · 8bit（最快、最兼容）</option>
+              <option value="hevc_nvenc">hevc_nvenc · 8bit（小体积、需较新播放器）</option>
+              <option value="libx264">libx264 · 8bit（软编、画质高、慢）</option>
+              <option value="libx265">libx265 · 8bit（体积最小、CPU 慢）</option>
+              <option value="hevc_nvenc_10bit">hevc_nvenc_10bit · 10bit（无色带、GPU 快）</option>
+              <option value="libx265_10bit">libx265_10bit · 10bit（无色带、体积小、CPU 慢）</option>
             </select>
           </label>
           <label class="field">
