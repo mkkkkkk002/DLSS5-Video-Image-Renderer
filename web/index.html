@@ -504,7 +504,7 @@
         <button class="btn" id="vdPickA">选原视频</button>
         <button class="btn" id="vdSwap" style="font-size:16px; padding:6px 8px;">⇄</button>
         <button class="btn" id="vdPickB">选渲染后</button>
-        <button class="btn" id="vdZoom">放大对比</button>
+        <button class="btn" id="vdZoom" disabled>放大对比</button>
       </div>
       <div class="vcompare empty" id="vdBox">
         <div class="vstage" id="vdStage">
@@ -610,6 +610,7 @@
   };
   const onReady = (side) => { ready[side] = true; if (ready.a && ready.b && !inited) {
       inited = true;
+      zoomB.disabled = false;
       ctrl.hidden = false;
       
       syncTo(vB.currentTime || 0);
@@ -625,6 +626,7 @@
     const topSrc = flipped ? roleB : roleA;      // top/left layer
     const baseSrc = flipped ? roleA : roleB;     // base/right layer
     ready = { a: false, b: false }; inited = false;
+    zoomB.disabled = true;
     vB.src = vurl(topSrc); vA.src = vurl(baseSrc);
     vB.muted = true;                             // keep only the rendered track audible
     applyLabels();
