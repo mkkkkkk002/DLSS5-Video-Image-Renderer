@@ -815,6 +815,21 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, path: r.path, name: path.basename(r.path) });
     }
 
+    // Opens a native file picker for a video to feed the side-by-side video compare module.
+    if (url.pathname === '/api/pick-video' && req.method === 'GET') {
+        if (process.platform !== 'win32') {
+            return sendJson(res, 501, { ok: false, error: 'file picker only supported on Windows' });
+        }
+        const filter = "视频文件 (*.mp4;*.mov;*.mkv;*.avi;*.webm;*.m4v)|*.mp4;*.mov;*.mkv;*.avi;*.webm;*.m4v|所有文件 (*.*)|*.*";
+        const body =
+            "$dlg = New-Object System.Windows.Forms.OpenFileDialog; " +
+            "$dlg.Title = '选择视频'; $dlg.Filter = '" + filter + "'; ";
+        const r = await runFileDialog(body);
+        if (r.error) return sendJson(res, 500, { ok: false, error: r.error });
+        if (r.cancelled) return sendJson(res, 200, { ok: false, cancelled: true });
+        return sendJson(res, 200, { ok: true, path: r.path, name: path.basename(r.path) });
+    }
+
     // Opens a native folder picker for the output directory, defaulting to the input's folder.
     // Returns the chosen directory; the page composes the final filename using the input stem
     // so the user only has to pick a folder, not a specific file.

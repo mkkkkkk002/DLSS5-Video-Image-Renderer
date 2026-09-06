@@ -158,10 +158,13 @@
   .img-modal.show { display: flex; }
   .img-modal-inner { position: relative; width: 95vw; height: 88vh; max-width: 1800px; }
   .img-modal .compare {
-    width: 100%; height: 100%;
+    width: fit-content; max-width: 100%; height: 100%;
     min-width: 0; min-height: 0;
     max-width: none; max-height: none;
     cursor: ew-resize;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
   .img-modal .compare .img-stage {
     max-width: 100%; max-height: 100%;
@@ -198,7 +201,12 @@
   cursor: ew-resize;
   user-select: none;
   min-height: 240px;
-  display: flex; align-items: center; justify-content: center;
+  /* Shrink-wrap to the image so the black background only shows while a frame is loading
+   * (not as permanent letterbox/pillarbox around the picture). */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
 }
 /* .img-stage is the single shared canvas: its size is EXACTLY the scaled-down source image
    (no letterbox). The rendered layer is drawn into that same rectangle and clipped relative to
@@ -493,6 +501,33 @@
           <span>原图</span>
           <span>渲染后</span>
         </div>
+      <div class="card" id="vdCard" style="margin-top:10px;">
+        <h2>视频对比</h2>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
+          <button class="btn" id="vdPickA" title="选择渲染前的视频(左/上层)">选渲染前…</button>
+          <button class="btn" id="vdPickB" title="选择渲染后的视频(右/下层)">选渲染后…</button>
+          <button class="btn" id="vdSwap" title="交换左右">⇄ 交换</button>
+        </div>
+        <div class="vcompare empty" id="vdBox">
+          <div class="vstage" id="vdStage">
+            <video id="vdAfter" playsinline preload="auto"></video>
+            <div class="vtop" id="vdTop"><video id="vdBefore" playsinline preload="auto"></video></div>
+            <div class="divider" id="vdDivider"></div>
+          </div>
+          <div class="compare-labels">
+            <span>渲染前</span>
+            <span>渲染后</span>
+          </div>
+        </div>
+        <div class="vctrl" id="vdCtrl" hidden>
+          <button class="btn" id="vdPlay" title="播放/暂停">▶</button>
+          <span class="time" id="vdTime">0:00 / 0:00</span>
+          <input type="range" id="vdSeek" min="0" max="1000" step="1" value="0" title="同步进度条">
+          <button class="btn" id="vdMute" title="静音渲染后音频">🔊</button>
+          <input type="range" id="vdVol" min="0" max="100" value="100" title="渲染后音量(渲染前静音,避免双声道回响)">
+        </div>
+        <div class="status" id="vdStatus">渲染完成会自动载入前后视频;也可手动选择。拖动画面左右对比 · 下方进度条同步播放</div>
+      </div>
       </div>
     </div>
   </div>
@@ -517,6 +552,152 @@
     <div class="img-modal-hint">拖动鼠标移动分隔条 · Esc 关闭</div>
   </div>
 </div>
+
+
+<!-- video side-by-side compare styles -->
+<style>
+.vcompare {
+  position: relative; background:#000; border-radius:8px; overflow:hidden;
+  cursor: ew-resize; user-select:none; display:inline-flex;
+  align-items:center; justify-content:center; max-width:100%;
+}
+.vcompare .vstage { position:relative; max-width:100%; max-height:62vh; line-height:0; }
+.vcompare video { display:block; max-width:100%; max-height:62vh; background:#000; object-fit:contain; }
+.vcompare .vtop { position:absolute; inset:0; clip-path:inset(0 100% 0 0); pointer-events:none; }
+.vcompare .vtop video { width:100%; height:100%; object-fit:contain; }
+.vcompare .divider { position:absolute; top:0; bottom:0; width:2px; background:rgba(255,255,255,.85);
+  box-shadow:0 0 6px rgba(0,0,0,.4); pointer-events:none; left:50%; }
+.vcompare .compare-labels span:first-child { text-shadow:0 1px 3px #000; }
+.vctrl { display:flex; align-items:center; gap:10px; margin-top:8px; flex-wrap:wrap; }
+.vctrl input[type=range] { flex:1 1 120px; min-width:80px; }
+.vctrl .time { font-size:12px; color:var(--dim); white-space:nowrap; }
+</style>
+<script>
+// ----------------------------------------------------------------- video side-by-side compare
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const vB = $('vdBefore'), vA = $('vdAfter');       // vB = rendered-before (top-left), vA = after (base)
+  const box = $('vdBox'), stage = $('vdStage'), topL = $('vdTop'), div = $('vdDivider');
+  const playB = $('vdPlay'), seek = $('vdSeek'), timeT = $('vdTime');
+  const vol = $('vdVol'), muteB = $('vdMute'), ctrl = $('vdCtrl'), st = $('vdStatus');
+  let ready = { a: false, b: false };
+  let dragging = false, syncing = false, curMuted = false, inited = false;
+  window.__vdManual = false;             // user picked videos manually -> don't auto-overwrite
+  window.__vdAutoDone = false;
+
+  const vurl = (p) => '/api/video?path=' + encodeURIComponent(p);
+  const fmt = (t) => {
+    if (!isFinite(t) || t < 0) t = 0;
+    const m = Math.floor(t / 60), s = Math.floor(t % 60);
+    return m + ':' + String(s).padStart(2, '0');
+  };
+  const onReady = (side) => { ready[side] = true; if (ready.a && ready.b && !inited) {
+      inited = true;
+      ctrl.hidden = false;
+      st.textContent = '拖动画面左右对比 · 下方进度条同步播放 · 渲染前已静音';
+      syncTo(vB.currentTime || 0);
+    } };
+
+  function load(a, b, auto) {
+    if (!a || !b) return;
+    if (!auto) window.__vdManual = true;
+    ready = { a: false, b: false }; inited = false;
+    vB.src = vurl(a); vA.src = vurl(b);
+    vB.muted = true;                 // same audio usually — keep only the rendered track audible
+    box.classList.remove('empty');
+    ctrl.hidden = true;
+    st.textContent = '加载视频…';
+    playB.textContent = '▶';
+  }
+  function syncTo(t) {
+    if (syncing) return;
+    syncing = true;
+    try { if (isFinite(vA.duration)) vA.currentTime = Math.min(t, vA.duration); } catch (e) { /* ignore */ }
+    try { if (isFinite(vB.duration)) vB.currentTime = Math.min(t, vB.duration); } catch (e) { /* ignore */ }
+    syncing = false;
+  }
+  function renderTime() {
+    const d = vA.duration || 0, t = vA.currentTime || 0;
+    timeT.textContent = fmt(t) + ' / ' + fmt(d);
+    if (!dragging && d > 0) seek.value = Math.round((t / d) * 1000);
+    if (vA.ended) playB.textContent = '▶';
+  }
+  function setPlayIcon() { playB.textContent = (vA && !vA.paused) ? '⏸' : '▶'; }
+
+  vA.addEventListener('loadedmetadata', () => onReady('a'));
+  vB.addEventListener('loadedmetadata', () => onReady('b'));
+  vA.addEventListener('timeupdate', renderTime);
+  vA.addEventListener('play', () => { setPlayIcon(); try { if (vB.paused) vB.play().catch(() => { }); } catch (e) { /* ignore */ } });
+  vB.addEventListener('play', () => { if (!vA.paused) { /* both playing */ } });
+  vA.addEventListener('pause', () => { setPlayIcon(); if (!vB.paused) vB.pause(); });
+  vB.addEventListener('pause', () => { if (!vA.paused) vA.pause(); });
+  vA.addEventListener('ended', () => { vB.pause(); setPlayIcon(); });
+  // drift correction while playing
+  setInterval(() => {
+    if (!vA.paused && vB.currentTime != null && vA.currentTime != null &&
+        Math.abs(vA.currentTime - vB.currentTime) > 0.15) {
+      try { vB.currentTime = vA.currentTime; } catch (e) { /* ignore */ }
+    }
+  }, 500);
+
+  playB.addEventListener('click', async () => {
+    if (!vA.src) return;
+    if (vA.paused) {
+      playB.textContent = '…';
+      try { await vA.play(); } catch (e) { /* ignore */ }
+      try { if (vB.paused) await vB.play(); } catch (e) { /* ignore */ }
+      setPlayIcon();
+    } else { vA.pause(); vB.pause(); setPlayIcon(); }
+  });
+  seek.addEventListener('input', () => {
+    if (!inited) return;
+    dragging = true;
+    const d = vA.duration || 0;
+    syncTo((seek.value / 1000) * d);
+    renderTime();
+  });
+  seek.addEventListener('change', () => { dragging = false; });
+  muteB.addEventListener('click', () => {
+    curMuted = !curMuted;
+    vA.muted = curMuted;
+    muteB.textContent = curMuted ? '🔇' : '🔊';
+  });
+  vol.addEventListener('input', () => { vA.volume = vol.value / 100; vA.muted = false; curMuted = false; muteB.textContent = '🔊'; });
+
+  // mouse-driven split (hover & drag both work)
+  const setSplit = (pct) => {
+    const p = Math.min(1, Math.max(0, pct));
+    topL.style.clipPath = 'inset(0 0 0 ' + (p * 100) + '%)';
+    div.style.left = (p * 100) + '%';
+  };
+  stage.addEventListener('mousemove', (e) => {
+    const r = stage.getBoundingClientRect();
+    if (r.width > 0) setSplit((e.clientX - r.left) / r.width);
+  });
+  stage.addEventListener('mouseleave', () => setSplit(0.5));
+  setSplit(0.5);
+
+  function srcOf(v) { const m = /path=([^&]*)/.exec(v.src || ''); return m ? decodeURIComponent(m[1]) : null; }
+  $('vdPickA').addEventListener('click', async () => {
+    const r = await fetch('/api/pick-video').then((x) => x.json());
+    if (!r.ok) { if (!r.cancelled) st.textContent = '选择失败: ' + (r.error || '?'); return; }
+    const other = srcOf(vA);
+    load(r.path, other || r.path);
+  });
+  $('vdPickB').addEventListener('click', async () => {
+    const r = await fetch('/api/pick-video').then((x) => x.json());
+    if (!r.ok) { if (!r.cancelled) st.textContent = '选择失败: ' + (r.error || '?'); return; }
+    const other = srcOf(vB);
+    load(other || r.path, r.path);
+  });
+  $('vdSwap').addEventListener('click', () => { const a = srcOf(vA), b = srcOf(vB); if (a && b) load(b, a); });
+
+  window.vdCompare = {
+    load: load,
+    autoload: (a, b) => { if (!window.__vdManual && !window.__vdAutoDone) { window.__vdAutoDone = true; load(a, b, true); } },
+  };
+})();
+</script>
 
 <!-- Floating log panel (bottom-right). Default folded; click the header to expand. -->
 <div id="logPanel" class="log-panel folded" aria-live="polite">
@@ -836,6 +1017,9 @@ function renderStatus(s) {
       if (s.output) {
         showExportMsg('渲染完成，视频已保存至：' + s.output, false);
       }
+      if (window.vdCompare && window.__vdOrig && s.output) {
+        window.vdCompare.autoload(window.__vdOrig, s.output);
+      }
       showStats(totalF > 0
         ? `共 ${totalF} 帧 · 平均 ${fps.toFixed(1)} 帧/秒 · 用时 ${fmtDur(s.elapsedSec)}`
         : '');
@@ -925,7 +1109,9 @@ $('startBtn').addEventListener('click', async () => {
   }).then((x) => x.json());
 
   if (r.ok && r.output) {
-    // nothing to remember -- the engine writes the final file directly (v1.2 flow)
+    // remember the pair for the video side-by-side compare module
+    window.__vdOrig = input;
+    window.__vdAutoDone = false;
   }
 
   if (timer) clearInterval(timer);
