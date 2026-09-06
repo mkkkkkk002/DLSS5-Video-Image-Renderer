@@ -930,7 +930,6 @@ function renderStatus(s) {
       st.textContent = `结束码 ${s.code} · 见日志`;
       st.className = 'status err';
       $('resultCard').style.display = 'none';
-      $('exportCard').style.display = 'none';
       showStats('');
     }
   } else if (s.running) {
