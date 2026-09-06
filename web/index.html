@@ -169,7 +169,7 @@
   .img-modal .compare img {
     width: 100%; height: 100%; object-fit: cover;
   }
-  .img-modal .compare .img-stage > img.orig { max-height: 88vh; }
+
   .img-modal-close {
     position: absolute; top: -36px; right: 0;
     color: #fff; background: rgba(0, 0, 0, .4); border: none;
@@ -564,7 +564,10 @@
 }
 .vd-zoom .vcompare video, .vd-zoom .vcompare .vstage { max-height: calc(100vh - 260px); }
 .vd-zoom .vcompare { display: block; }
-.vd-zoom #vdZoomClose { display: inline-flex; align-items: center; justify-content: center; }
+.vd-zoom #vdZoomClose {
+  display: inline-flex !important; align-items: center; justify-content: center;
+  position: fixed !important; top: 26px; right: 26px;
+}
 </style>
 <style>
 .vcompare {
@@ -684,7 +687,13 @@
     try { vA.play().catch(() => { }); } catch (e) { /* ignore */ }
     try { if (vB.paused) vB.play().catch(() => { }); } catch (e) { /* ignore */ }
   };
-  vA.addEventListener('ended', restartAll);   // auto-replay together, never frame-skewed
+  const maybeRestart = (v) => {
+    const d = v.duration;
+    if (!restarting && d > 0 && v.currentTime >= d - 0.06) restartAll();
+  };
+  vA.addEventListener('timeupdate', () => maybeRestart(vA));
+  vB.addEventListener('timeupdate', () => maybeRestart(vB));
+  vA.addEventListener('ended', restartAll);   // fallback only
   vB.addEventListener('ended', restartAll);
 
   // drift correction while playing
