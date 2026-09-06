@@ -503,7 +503,7 @@
     </div>
 
     <div class="card" id="vdCard" style="margin-top:10px; position:relative;">
-      <button class="btn" id="vdZoomClose" style="display:none; position:absolute; top:8px; right:8px; z-index:20; border-radius:50%; width:34px; height:34px; padding:0; font-size:15px;">✕</button>
+      <button class="btn" id="vdZoomClose" style="display:none;">关闭 ✕</button>
       <h2>视频对比</h2>
       <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
         <button class="btn" id="vdPickA">选原视频</button>
@@ -567,8 +567,13 @@
 .vd-zoom .vcompare { display: block; }
 .vd-zoom #vdZoomClose {
   display: inline-flex !important; align-items: center; justify-content: center;
-  position: fixed !important; top: 26px; right: 26px;
+  position: fixed !important; top: 24px; right: 24px;
+  color: #fff; background: rgba(0,0,0,.4); border: none;
+  font-size: 13px; font-family: inherit;
+  padding: 6px 14px; border-radius: 4px; cursor: pointer;
+  width: auto; height: auto;
 }
+.vd-zoom #vdZoomClose:hover { background: rgba(0,0,0,.7); }
 </style>
 <style>
 .vcompare {
