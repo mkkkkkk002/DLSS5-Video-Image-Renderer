@@ -451,10 +451,6 @@
         <span>保存的文件名</span>
         <input type="text" id="exportName" placeholder="留空 = 默认名（自动带 nr_ 前缀）">
       </label>
-      <label style="display:flex; gap:6px; align-items:center; margin-top:2px;">
-        <input type="checkbox" id="preEnhance">
-        <span style="font-size:12px;">预处理：Real-ESRGAN 保噪超分(4x→缩回原尺寸)后再送 DLSSNR</span>
-      </label>
       <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
             <div class="btn-row" style="margin-top:4px;">
         <button class="btn primary" id="startBtn">开始处理</button>
@@ -848,14 +844,6 @@ function renderStatus(s) {
       st.className = 'status err';
       showStats('');
     }
-  } else if (s.phase === 'prep') {
-    // Pre-process phase (Real-ESRGAN before the NR stage): same rhythm as the render progress.
-    const pt = (s.prepTxt || '预处理');
-    st.textContent = totalF > 0 ? `${pt} · 第 ${doneF}/${totalF} 帧` : `${pt}…`;
-    st.className = 'status';
-    showStats(fps > 0 && s.etaSec > 0
-      ? `平均 ${fps.toFixed(1)} 帧/秒 · 剩余约 ${fmtDur(s.etaSec)}`
-      : '统计中…');
   } else if (s.running) {
     // Whole-video multi-pass: "第 n/m 轮,第 a/b 帧" with an overall (not per-pass) bar.
     const roundTxt = (s.passes || 1) > 1 ? `第 ${s.pass || 1}/${s.passes} 轮,` : '';
@@ -901,7 +889,6 @@ function buildJobCfg() {
         frameGuidance: $('flowEnable').checked ? 3 : 0,
         depthInterval: parseInt($('depthInterval').value, 10) || 0,
         renderPasses: Math.max(1, parseInt($('renderPasses').value, 10) || 1),
-        preEnhance: !!($('preEnhance') && $('preEnhance').checked),
     };
 }
 

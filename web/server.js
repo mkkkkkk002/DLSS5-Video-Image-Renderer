@@ -62,9 +62,10 @@ function cleanUploadsDir() {
 
 function cleanFrameDir() {
     try {
-        fs.rmSync(FRAME_DIR, { recursive: true, force: true });
+        for (const f of fs.readdirSync(FRAME_DIR)) {
+            fs.unlinkSync(path.join(FRAME_DIR, f));
+        }
     } catch (e) { /* ignore */ }
-    try { fs.mkdirSync(FRAME_DIR, { recursive: true }); } catch (e) { /* ignore */ }
 }
 
 // Resolves the engine executable at job-start time (not module load) so a rebuild is picked
@@ -82,16 +83,6 @@ function findEngine() {
         if (files.length) return path.join(coreDir, files[0]);
     } catch (e) { /* ignore */ }
     return path.join(coreDir, 'dlss5nr_run.exe'); // reported only if it truly does not exist
-}
-
-// Resolves the Real-ESRGAN ncnn tool at job time (may be absent: pre-enhance then errors out).
-function findRealesr() {
-    const cands = [
-        path.join(ROOT, 'tools', 'realesrgan-ncnn-vulkan', 'realesrgan-ncnn-vulkan.exe'),
-        path.join(__dirname, '..', 'tools', 'realesrgan-ncnn-vulkan', 'realesrgan-ncnn-vulkan.exe'),
-    ];
-    for (const p of cands) if (fs.existsSync(p)) return p;
-    return cands[0];
 }
 
 // Resolves the NR model dll + forwarder pair for a job. cfg.model selects the precision
@@ -169,83 +160,13 @@ function mimeFor(p) {
     );
 }
 
-// ffmpeg runner that reports frame progress (used by the pre-enhance re-encode stage).
-function runFfmpegProgress(args, total, tick, txt) {
-    return new Promise((ok, bad) => {
-        const p = spawn('ffmpeg', ['-y', '-v', 'error', '-nostats', '-progress', 'pipe:1', ...args],
-                        { windowsHide: true });
-        trackPrep(p);
-        let err = '';
-        let out = '';
-        let lastN = -1;
-        p.stdout.on('data', (c) => {
-            out += c.toString('utf8');
-            const m = out.match(/frame=(\d+)/g);
-            out = out.slice(-4096);
-            if (m) {
-                const n = parseInt(m[m.length - 1].split('=')[1], 10);
-                if (n > lastN) { lastN = n; tick(Math.min(total, n), txt); }
-            }
-        });
-        p.stderr.on('data', (c) => { err += c.toString('utf8'); });
-        p.on('close', (code) => {
-            if (code === 0) { tick(total, ''); return ok(); }
-            bad(new Error('ffmpeg exit ' + code + ' ' + err.trim().split(/\r?\n/).filter(Boolean).slice(-3).join(' | ')));
-        });
-        p.on('error', bad);
-    });
-}
-
-function trackPrep(p) {
-    if (current && current.prepProcs) current.prepProcs.push(p);
-}
-
-function rmDirQuiet(d, tries) {
-    tries = tries || 5;
-    for (let k = 0; k < tries; ++k) {
-        try { fs.rmSync(d, { recursive: true, force: true }); return true; }
-        catch (e) { /* transient lock (just-killed process still holds a handle) */ }
-        const until = Date.now() + 400;
-        while (Date.now() < until) { /* busy wait */ }
-    }
-    return false;
-}
-
-// Cancel/failure often kill ffmpeg while it still holds file handles; retry for ~15 s so the
-// raw/4x frame directories never survive a stopped prep job.
-function sweepDirsLater(dirs) {
-    let round = 0;
-    const iv = setInterval(() => {
-        round++;
-        dirs.forEach((d) => rmDirQuiet(d, 2));
-        const alive = dirs.filter((d) => { try { return fs.existsSync(d); } catch (e) { return false; } });
-        if (round > 7 || alive.length === 0) clearInterval(iv);
-    }, 2000);
-    if (iv.unref) iv.unref();
-}
-
 // Single-shot ffmpeg wrapper used by the image-render helpers. "-y -v error" are always added.
 function runFfmpeg(args) {
     return new Promise((ok, bad) => {
         const p = spawn('ffmpeg', ['-y', '-v', 'error', ...args], { windowsHide: true });
-        trackPrep(p);
         let err = '';
         p.stderr.on('data', (c) => { err += c.toString('utf8'); });
         p.on('close', (code) => code === 0 ? ok() : bad(new Error('ffmpeg exit ' + code + ' ' + err.trim())));
-        p.on('error', bad);
-    });
-}
-
-// Runs an external tool (realesr-ncnn etc.); surfaces the tail of stderr on failure.
-function runTool(exe, args, cwd) {
-    return new Promise((ok, bad) => {
-        const p = spawn(exe, args, { cwd: cwd || ROOT, windowsHide: true });
-        let err = '';
-        p.stderr.on('data', (c) => { err += c.toString('utf8'); });
-        p.on('close', (code) => {
-            if (code === 0) return ok();
-            bad(new Error('tool exit ' + code + ' — ' + err.trim().split(/\r?\n/).filter(Boolean).slice(-6).join(' | ')));
-        });
         p.on('error', bad);
     });
 }
@@ -556,165 +477,6 @@ function makeBrowserPreview(masterPath) {
 // Whole-video multi-pass plan ("渲染次数"): pass 1 decodes the original file (honouring the
 // crop window); every later pass re-renders the *full* previous pass output as if it were a new
 // video, so the final file is the N-th generation. Intermediate outputs are temp files that are
-// ------------------------------------------------------------------ pre-enhance
-// Optional whole-video pre-process with the Real-ESRGAN general model (the KEEP-NOISE "保噪超分"
-// build; note the upstream ncnn files are labelled the opposite way round, so this helper picks
-// the model file by MEASURED behaviour, not by name). Frames are upscaled 4x, shrunk back to the
-// source resolution and re-encoded losslessly, so the DLSSNR stage still sees a same-resolution,
-// same-frame-count stream. Audio is copied over from the source.
-// Live-run ffmpeg while counting produced png files -> frame progress callback.
-function runCounted(args, dirPath, total, tick) {
-    return new Promise((ok, bad) => {
-        const p = spawn('ffmpeg', ['-y', '-v', 'error', ...args], { windowsHide: true });
-        trackPrep(p);
-        let err = '';
-        p.stderr.on('data', (c) => { err += c.toString('utf8'); });
-        const iv = setInterval(() => {
-            try {
-                const n = fs.readdirSync(dirPath).length;
-                tick(Math.min(n, total), '解码帧…');
-            } catch (e) { /* dir may not exist yet */ }
-        }, 700);
-        p.on('close', (code) => {
-            clearInterval(iv);
-            if (code === 0) return ok();
-            bad(new Error('ffmpeg exit ' + code + ' ' + err.trim()));
-        });
-        p.on('error', (e) => { clearInterval(iv); bad(e); });
-    });
-}
-
-// Live-run realesr directory mode; its stdout (and on some builds stderr) carries per-frame
-// percent tokens -> frame progress. The tool is SILENT while it loads the model and computes the
-// first tiles (~3-6 s, more at high resolutions), so a heartbeat keeps the UI alive meanwhile.
-function runRealesrPct(exe, args, total, tick, base, prefix) {
-    base = base || 0;
-    prefix = prefix || 'Real-ESRGAN 4x…';
-    return new Promise((ok, bad) => {
-        const p = spawn(exe, args, { cwd: ROOT, windowsHide: true });
-        trackPrep(p);
-        let last = 0;
-        let gotProgress = false;
-        const push = (chunk) => {
-            const txt = chunk.toString('utf8');
-            const all = txt.match(/(\d+(?:\.\d+)?)\s*%/g);
-            if (!all) return;
-            const pct = parseFloat(all[all.length - 1].replace('%', '').trim());
-            if (pct > last) {
-                last = pct;
-                gotProgress = true;
-                tick(base + Math.round(pct / 100 * total), prefix);
-            }
-        };
-        const hb = setInterval(() => {
-            if (!gotProgress) {
-                tick(base, prefix + ' 正在加载模型/计算首帧，请稍候');
-            }
-        }, 3000);
-        p.stdout.on('data', push);
-        p.stderr.on('data', push);   // percent may arrive on stderr on some builds
-        p.on('close', (code) => {
-            clearInterval(hb);
-            if (code === 0) { tick(total, ''); return ok(); }
-            bad(new Error('tool exit ' + code));
-        });
-        p.on('error', (e) => { clearInterval(hb); bad(e); });
-    });
-}
-
-async function preEnhanceRun(inputPath, startS, endS, onStats, outState) {
-    outState = outState || {};
-    const exe = findRealesr();
-    if (!fs.existsSync(exe)) throw new Error('未找到 tools/realesrgan-ncnn-vulkan，无法做 realesr 预处理');
-    const model = 'realesr-general-wdn-x4v3'; // 实测 = 保噪超分（保留颗粒、超分清伪影）
-    const pi = await probe(inputPath);
-    if (!pi.ok || !pi.info.width) throw new Error('预处理: 无法探测输入视频');
-    const W = pi.info.width, H = pi.info.height;
-    const fps = pi.info.fps > 0 ? pi.info.fps : 30;
-    const full = pi.info.duration || 0;
-    const wStart = startS > 0 ? startS : 0;
-    const wEnd = endS > 0 ? Math.min(endS, full > 0 ? full : endS) : full;
-    const est = Math.max(1, Math.round((wEnd - wStart) * fps));
-    // Cap fed resolution (temp-frame optimisation; final output still original W x H)
-    const CAP = 1280;
-    let dW = W, dH = H;
-    if ((W >= H ? W : H) > CAP) {
-        if (W >= H) { dW = CAP; dH = Math.max(2, Math.round(H * CAP / W / 2) * 2); }
-        else { dH = CAP; dW = Math.max(2, Math.round(W * CAP / H / 2) * 2); }
-    }
-    const scaleF = (dW !== W || dH !== H) ? ['-vf', 'scale=' + dW + ':' + dH + ':flags=lanczos'] : [];
-    fs.mkdirSync(FRAME_DIR, { recursive: true });
-    const ts = Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
-    const outMp4 = path.join(FRAME_DIR, 'pre_' + ts + '.mp4');
-    const outA = path.join(FRAME_DIR, 'pre_' + ts + '_a.mp4');
-    const wipe = (d) => rmDirQuiet(d, 5);
-    const tick = (done, txt) => { if (onStats) onStats(Math.min(done, est), est, txt || ''); };
-    const CH = 48; // frames per chunk: bounds temp-dir peak instead of the whole film at once
-    const chunks = Math.max(1, Math.ceil(est / CH));
-    const segments = [];
-    let doneBase = 0;
-    try {
-        for (let c = 0; c < chunks; ++c) {
-            if (current && current.cancelled) throw new Error('cancelled');
-            const dirF = path.join(FRAME_DIR, 'preF_' + ts + '_' + c);
-            const dirO = path.join(FRAME_DIR, 'preO_' + ts + '_' + c);
-            if (outState.dirs) outState.dirs.push(dirF, dirO);
-            fs.mkdirSync(dirF, { recursive: true });
-            fs.mkdirSync(dirO, { recursive: true });
-            // 1) decode this chunk from the source (fast input seek, capped resolution)
-            const segT = (c * CH) / fps;
-            const dec = ['-ss', (wStart + segT).toFixed(3), '-i', inputPath,
-                         '-frames:v', String(CH), ...scaleF, '-q:v', '2',
-                         path.join(dirF, 'f_%06d.jpg')];
-            tick(doneBase, `分块解码 ${c + 1}/${chunks}…`);
-            await runFfmpeg(dec);
-            let nf = 0;
-            try { nf = fs.readdirSync(dirF).length; } catch (e) { /* ignore */ }
-            if (nf === 0) { wipe(dirF); wipe(dirO); break; }
-            // 2) realesr over this chunk only
-            tick(doneBase, `Real-ESRGAN ${c + 1}/${chunks}…`);
-            await runRealesrPct(exe, ['-i', dirF, '-o', dirO, '-n', model, '-s', '4',
-                                      '-f', 'jpg', '-j', '4:4:4'],
-                                nf, (d, t) => tick(d, t), doneBase,
-                                `Real-ESRGAN ${c + 1}/${chunks}…`);
-            // 3) downscale back to source res and append into a lossless segment
-            const seg = path.join(FRAME_DIR, 'pre_' + ts + '_seg' + c + '.mp4');
-            tick(doneBase, `编码块 ${c + 1}/${chunks}…`);
-            await runFfmpegProgress(['-framerate', String(fps),
-                                     '-i', path.join(dirO, 'f_%06d.jpg'),
-                                     '-vf', 'scale=' + W + ':' + H + ':flags=lanczos',
-                                     '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-qp', '0',
-                                     '-preset', 'ultrafast', seg],
-                                    nf, (d, t) => tick(d, `编码块 ${c + 1}/${chunks}…`), '');
-            segments.push(seg);
-            doneBase += nf;
-            // 4) free this chunk's frames immediately (keeps temp peak small)
-            wipe(dirF); wipe(dirO);
-        }
-        if (segments.length === 0) throw new Error('预处理: 没有解出任何帧(窗口为空?)');
-        // 5) concat lossless segments + audio remux
-        const list = path.join(FRAME_DIR, 'pre_' + ts + '_list.txt');
-        fs.writeFileSync(list, segments.map((s) => "file '" + s.replace(/\\/g, '/') + "'").join('\n'));
-        await runFfmpeg(['-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', outMp4]);
-        await runFfmpeg(['-i', outMp4, '-i', inputPath,
-                         '-map', '0:v:0', '-map', '1:a:0?',
-                         '-c', 'copy', '-shortest', outA]);
-        try { fs.unlinkSync(outMp4); } catch (e) { /* ignore */ }
-        try { fs.unlinkSync(list); } catch (e) { /* ignore */ }
-        segments.forEach((s) => { try { fs.unlinkSync(s); } catch (e) { /* ignore */ } });
-        console.log('[prep] stage=done frames=' + doneBase);
-        tick(doneBase, '');
-        return { file: outA, width: W, height: H, fps };
-    } catch (e) {
-        try { fs.unlinkSync(outMp4); } catch (e2) { /* ignore */ }
-        try { fs.unlinkSync(outA); } catch (e2) { /* ignore */ }
-        try { fs.unlinkSync(path.join(FRAME_DIR, 'pre_' + ts + '_list.txt')); } catch (e2) { /* ignore */ }
-        segments.forEach((s) => { try { fs.unlinkSync(s); } catch (e2) { /* ignore */ } });
-        throw e;
-    }
-}
-
-
 // removed when the job finishes. Each pass is a fresh engine process, i.e. exactly what you would
 // get by running the CLI N times by hand.
 function buildSteps(cfg, finalOut) {
@@ -746,8 +508,7 @@ function startJob(cfg) {
     // v1.2-style single-stage render: the chosen encoder writes the FINAL file directly (no
     // lossless master, no browser preview step). File name honours the dedicated file-name
     // field (or defaults to nr_<input>.mp4); the output field is a folder (or blank = outputs/).
-    const srcName = cfg._origInput || cfg.input;
-    const inputStem = path.basename(srcName).replace(/\.[^.]+$/, '');
+    const inputStem = path.basename(cfg.input).replace(/\.[^.]+$/, '');
     const name = (cfg.fileName || '').trim();
     const defaultName = name
         ? (/\.[A-Za-z0-9]{1,5}$/.test(name) ? name : name + '.mp4')
@@ -768,75 +529,22 @@ function startJob(cfg) {
         cancelled: false,
         code: null,
         cfg,
-        prepFile: cfg._prepFile || null,   // realesr intermediate (cache dir), removed at job end
         output: finalOut,
         master: null,
         preview: null,
         export: null,
     };
-    job.phase = cfg.preEnhance ? 'prep' : 'render';
     current = job;
     if (job.steps.length > 1) {
         job.lines.push(
             `whole-video multi-pass: ${job.steps.length} full renders in series (final = ${finalOut})`);
     }
-    if (cfg.preEnhance) {
-        // Pre-enhance runs as an async "phase 0": the UI polls its progress through /api/status,
-        // and only when it finishes do we point the NR steps at the pre-processed intermediate.
-        job.prepProcs = [];
-        job.prepDone = 0;
-        job.prepTotal = 0;
-        job.prepTxt = '启动预处理…';
-        job.prepT0 = null;
-        startPrepAsync(job, cfg.input, parseFloat(cfg.startTime) || 0, parseFloat(cfg.endTime) || 0);
-        return { ok: true, id: job.id, output: finalOut, passes: job.steps.length, prep: true };
-    }
     runNextPass(job);
     return { ok: true, id: job.id, output: finalOut, passes: job.steps.length };
 }
 
-async function startPrepAsync(job, input, startS, endS) {
-    const st = { dirs: [] };
-    try {
-        const prep = await preEnhanceRun(input, startS, endS, (done, total, txt) => {
-            job.prepDone = done;
-            job.prepTotal = total;
-            job.prepTxt = txt;
-            if (!job.prepT0) job.prepT0 = Date.now();
-        });
-        job.cfg.input = prep.file;
-        job.cfg.startTime = 0;
-        job.cfg.endTime = 0;
-        job.cfg._prepFile = prep.file;
-        job.prepFile = prep.file;
-        job.steps[0].input = prep.file;   // steps captured the original path at build time
-        job.phase = 'render';
-        if (job.cancelled || job.finished) {
-            jobFinish(job, true);
-            return;
-        }
-        runNextPass(job);
-        sweepDirsLater(st.dirs);
-    } catch (e) {
-        job.phase = 'render';
-        if (job.cancelled) {
-            jobFinish(job, true);          // user stopped during prep -> clean finish (not an error)
-            return;
-        }
-        job.finished = true;
-        job.code = -2;
-        job.lines.push('ERROR: 预处理失败: ' + e.message);
-    } finally {
-        sweepDirsLater(st.dirs);
-    }
-}
-
 function jobFinish(job, cancelled) {
     cleanupTemps(job);
-    if (job.prepFile) {
-        try { if (fs.existsSync(job.prepFile)) fs.unlinkSync(job.prepFile); } catch (e) { /* ignore */ }
-        job.prepFile = null;
-    }
     if (cancelled) {
         job.lines.push('cancelled by user');
         job.cancelled = true;
@@ -999,32 +707,6 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/status' && req.method === 'GET') {
         const j = current;
         if (!j) return sendJson(res, 200, { running: false, lines: [], lineCount: 0 });
-        if (j.phase === 'prep' && !j.finished) {
-            const nowMs = Date.now();
-            const el0 = j.prepT0 || nowMs;
-            const elapsedSec = Math.max(0, (nowMs - el0) / 1000);
-            const total = Math.max(1, j.prepTotal || 1);
-            const done = Math.min(j.prepDone, total);
-            const avgFps = elapsedSec >= 1 && done > 0 ? done / elapsedSec : 0;
-            const etaSec = avgFps > 0 && total > done ? Math.round((total - done) / avgFps) : 0;
-            return sendJson(res, 200, {
-                running: true,
-                phase: 'prep',
-                prepTxt: j.prepTxt || '',
-                done: done,
-                total: total,
-                overallDone: done,
-                overallTotal: total,
-                avgFps: Math.round(avgFps * 10) / 10,
-                etaSec,
-                elapsedSec: Math.round(elapsedSec),
-                finished: false,
-                code: null,
-                output: j.output || null,
-                lines: j.lines,
-                lineCount: j.lines.length,
-            });
-        }
         let outputSize = null;
         if (j.output && fs.existsSync(j.output)) {
             try { outputSize = fs.statSync(j.output).size; } catch (e) {}
@@ -1159,21 +841,12 @@ const server = http.createServer(async (req, res) => {
         if (!body.input) {
             return sendJson(res, 400, { ok: false, error: 'input is required' });
         }
-        // Pre-enhance (body.preEnhance) is handled inside startJob as an async "phase 0" with
-        // live progress; nothing else to set up here.
         return sendJson(res, 200, startJob(body));
     }
 
     if (url.pathname === '/api/cancel' && req.method === 'POST') {
         if (current && !current.finished) {
             current.cancelled = true;
-            // Pre-process phase runs its own ffmpeg/realesr children: kill them so "停止" takes
-            // effect immediately instead of only when the current prep step finishes naturally.
-            if (current.phase === 'prep' && current.prepProcs) {
-                for (const p of current.prepProcs) {
-                    try { p.kill(); } catch (e) { /* ignore */ }
-                }
-            }
             if (current.child) {
                 try { current.child.kill(); } catch (e) { /* ignore */ }
             } else {
