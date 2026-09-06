@@ -449,6 +449,12 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
     const UINT useW = W;
     const UINT useH = H;
     const UINT useRowBytes = useW * 4;
+    // 10/12-bit output: the final frame must stay 16-bit per channel (fed as rgba64le to a
+    // HEVC/x265 10-bit encoder), so the pipeline reads back the 16F result instead of the
+    // GPU's 8-bit final pass.
+    const bool deepOut = opt.pixFmt.find("10le") != std::string::npos ||
+                         opt.pixFmt.find("12le") != std::string::npos ||
+                         opt.pixFmt.find("16le") != std::string::npos;
 
     // -------------------------------------------------- working-res textures (rebuild on size)
     bool outTexFresh = false;
@@ -538,9 +544,10 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
             st.blendTargets = true;
         }
     }
-    // GPU finalisation is disabled for --png16: the 16F model result must be read back (not
-    // quantised to 8-bit on the GPU) so the 16-bit PNG keeps full precision.
-    const bool useGpuBlend = st.blendInit && st.blendTargets && st.blend.ok() && opt.png16.empty();
+    // GPU finalisation is disabled for --png16 and deep-bit output: the 16F model result must be
+    // read back (not quantised to 8-bit on the GPU) so the 16-bit export keeps full precision.
+    const bool useGpuBlend = st.blendInit && st.blendTargets && st.blend.ok() && opt.png16.empty() &&
+                             !deepOut;
 
     // ---------------------------------------------------------------- io window
     double durationSec = 0.0;
@@ -618,6 +625,8 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
     // so decode waits hide behind the GPU work.
     std::vector<uint8_t> outBuf((size_t)useRowBytes * useH);          // rgba8 -> encoder
     std::vector<uint8_t> outF16((size_t)useW * 8 * useH);             // CPU-finalizer fallback
+    std::vector<uint16_t> out16;                                       // rgba64le for 10/12-bit
+    if (deepOut) out16.resize((size_t)useW * useH * 4);
     const size_t frameBytes = (size_t)useRowBytes * useH;
     // NV-OF now hands over only the sparse flow grid (gridW*gridH*4 bytes), which the D3D12
     // densify pass up-samples to the full-res motion field; the 8MB motion buffer is gone.
@@ -653,7 +662,7 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
     VideoWriter writer;
     std::string audioSrc = (opt.keepAudio && info.hasAudio) ? opt.input : std::string();
     if (!writer.open(opt.output, (int)useW, (int)useH, info.fps, opt.encoder, audioSrc,
-                     opt.startTime, opt.extraArgs, opt.pixFmt)) {
+                     opt.startTime, opt.extraArgs, opt.pixFmt, deepOut)) {
         printf("ERROR: could not start the encoder\n");
         reader.close();
         return 1;
@@ -943,12 +952,19 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
         auto tJ = T();
         addNs(perf.down, tI, tJ);
 
-        // ------------------------------------------------------------- finalise to 8-bit
+        // ------------------------------------------------------------- finalise (8-bit or deep)
         auto tK = T();
         if (!useGpuBlend) {
-            // Fallback path: CPU residual blend + Bayer dither from the 16F readback.
-            finalizeToRgba8(inP, outF16.data(), outBuf.data(), (uint32_t)useW, (uint32_t)useH,
-                            opt.residualMult);
+            if (deepOut) {
+                // 10/12-bit: keep the residual-blended result at 16-bit per channel (0..65535,
+                // no dither needed) so the encoder quantises to its own 10/12 bits.
+                finalize16(inP, outF16.data(), out16.data(), (uint32_t)useW, (uint32_t)useH,
+                           opt.residualMult);
+            } else {
+                // Fallback path: CPU residual blend + Bayer dither from the 16F readback.
+                finalizeToRgba8(inP, outF16.data(), outBuf.data(), (uint32_t)useW,
+                                (uint32_t)useH, opt.residualMult);
+            }
         }
         if (!useGpuBlend && done == 0 && !opt.png16.empty()) {
             // 16-bit first-frame export: full 16F precision, no 8-bit quantisation at all.
@@ -965,7 +981,9 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
         addNs(perf.residual, tK, tL);
 
         // ------------------------------------------------------------- encode
-        if (!writer.writeFrame(outBuf.data(), frameBytes)) {
+        const uint8_t* encPtr = deepOut ? (const uint8_t*)out16.data() : outBuf.data();
+        const size_t encBytes = deepOut ? (size_t)useW * useH * 8 : frameBytes;
+        if (!writer.writeFrame(encPtr, encBytes)) {
             printf("ERROR: encode failed at frame %lld\n", done);
             stopped = true;
             break;
@@ -1168,6 +1186,19 @@ int wmain(int argc, wchar_t** argv) {
     if (opt.daemon) {
         DaemonState st;
         return runDaemon(st);
+    }
+
+    // 10-bit encoder aliases: *_10bit map to the base encoder + a 10-bit pixel format
+    // (yuv420p10le; NVENC also needs the main10 profile). The deep pipeline reads the 16F
+    // result back, so these outputs never touch an 8-bit quantisation.
+    if (opt.encoder == "hevc_nvenc_10bit") {
+        opt.encoder = "hevc_nvenc";
+        if (opt.pixFmt == "yuv420p") opt.pixFmt = "yuv420p10le";
+        if (opt.extraArgs.find("-profile:v") == std::string::npos)
+            opt.extraArgs += " -profile:v main10";
+    } else if (opt.encoder == "libx265_10bit") {
+        opt.encoder = "libx265";
+        if (opt.pixFmt == "yuv420p") opt.pixFmt = "yuv420p10le";
     }
 
     if (opt.input.empty()) {

@@ -209,7 +209,7 @@ void VideoReader::close() {
 bool VideoWriter::open(const std::string& outPath, int width, int height, double fps,
                        const std::string& encoder, const std::string& audioSrc,
                        double audioStartSec, const std::string& extraArgs,
-                       const std::string& pixFmt) {
+                       const std::string& pixFmt, bool raw16) {
     std::string encArgs;
     if (encoder == "h264_nvenc") {
         encArgs = "-c:v h264_nvenc -preset p4 -rc vbr -cq 20 -b:v 0";
@@ -232,8 +232,20 @@ bool VideoWriter::open(const std::string& outPath, int width, int height, double
     }
 
 #ifdef _WIN32
-    std::wstring cmd = L"ffmpeg -y -v error -f rawvideo -pix_fmt rgba -s " +
+    // raw16: feed 16-bit-per-channel RGBA (rgba64le) so 10/12-bit HEVC output keeps the full
+    // depth instead of passing through an 8-bit quantisation.
+    std::wstring cmd = L"ffmpeg -y -v error -f rawvideo -pix_fmt " +
+                       std::wstring(raw16 ? L"rgba64le" : L"rgba") + L" -s " +
                        std::to_wstring(width) + L"x" + std::to_wstring(height);
+    // NVENC needs its native semi-planar 10-bit input (p010le): swscale cannot feed
+    // rgba64le -> yuv420p10le to the hardware encoder directly, so convert with an explicit
+    // format filter. Software x265 takes the planar yuv420p10le path.
+    std::string pixFilter;
+    std::string outFmt = pixFmt;
+    if (raw16 && encoder.find("nvenc") != std::string::npos) {
+        pixFilter = " -vf format=p010le";
+        outFmt = "p010le";
+    }
     wchar_t buf[64];
     swprintf(buf, 64, L" -r %.6f", fps);
     cmd += buf;
@@ -245,7 +257,8 @@ bool VideoWriter::open(const std::string& outPath, int width, int height, double
     } else {
         cmd += L" -map 0:v:0";
     }
-    cmd += L" " + widen(encArgs) + L" -pix_fmt " + widen(pixFmt) + L" -movflags +faststart " + wquote(widen(outPath));
+    cmd += L" " + widen(encArgs) + widen(pixFilter) + L" -pix_fmt " + widen(outFmt) +
+           L" -movflags +faststart " + wquote(widen(outPath));
     m_pipe = WPOPEN(cmd.c_str(), L"wb");
 #else
     std::string cmd = "ffmpeg -y -v error -f rawvideo -pix_fmt rgba -s " +

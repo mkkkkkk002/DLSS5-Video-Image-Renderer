@@ -419,10 +419,12 @@
         <label class="field">
           <span>编码器</span>
           <select id="encoder">
-            <option value="h264_nvenc">h264_nvenc (推荐)</option>
-            <option value="hevc_nvenc">hevc_nvenc</option>
-            <option value="libx264">libx264</option>
-            <option value="libx265">libx265</option>
+            <option value="h264_nvenc">h264_nvenc · 8bit（最快、最兼容）</option>
+            <option value="hevc_nvenc">hevc_nvenc · 8bit（小体积、需较新播放器）</option>
+            <option value="libx264">libx264 · 8bit（软编、画质高、慢）</option>
+            <option value="libx265">libx265 · 8bit（体积最小、CPU 慢）</option>
+            <option value="hevc_nvenc_10bit">hevc_nvenc_10bit · 10bit（无色带、GPU 快）</option>
+            <option value="libx265_10bit">libx265_10bit · 10bit（无色带、体积小、CPU 慢）</option>
           </select>
         </label>
         <div class="field">

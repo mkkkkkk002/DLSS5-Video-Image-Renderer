@@ -62,7 +62,7 @@ public:
     bool open(const std::string& outPath, int width, int height, double fps,
               const std::string& encoder, const std::string& audioSrc,
               double audioStartSec = 0.0, const std::string& extraArgs = "",
-              const std::string& pixFmt = "yuv420p");
+              const std::string& pixFmt = "yuv420p", bool raw16 = false);
     bool writeFrame(const uint8_t* src, size_t bytes);
     void close();
     bool isOpen() const { return m_pipe != nullptr; }
