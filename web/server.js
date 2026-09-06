@@ -221,6 +221,8 @@ function runFileDialog(scriptBody, valueExpr) {
             "try { [PInvoke.Dpi]::SetProcessDPIAware() | Out-Null } catch { }; " +
             "try { if (-not ('PInvoke.Mui' -as [type])) { Add-Type -MemberDefinition '[DllImport(\"kernel32.dll\", CharSet = CharSet.Unicode)] public static extern bool SetProcessPreferredUILanguages(uint dwFlags, string pwszLanguagesBuffer, ref uint pulNumLanguages);' -Name Mui -Namespace PInvoke } } catch { }; " +
             "try { $n = [uint32]0; [PInvoke.Mui]::SetProcessPreferredUILanguages(8, \"zh-CN`0\", [ref]$n) | Out-Null } catch { }; " +
+            "try { if (-not ('PInvoke.Mui2' -as [type])) { Add-Type -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern ushort SetThreadUILanguage(ushort LangId);' -Name Mui2 -Namespace PInvoke } } catch { }; " +
+            "try { [PInvoke.Mui2]::SetThreadUILanguage(2052) | Out-Null } catch { }; " +
             // force Chinese UI strings for the managed dialog parts (buttons/labels of FolderBrowserDialog etc.)
             "try { $c = New-Object System.Globalization.CultureInfo('zh-CN'); " +
             "[System.Threading.Thread]::CurrentThread.CurrentUICulture = $c; " +
