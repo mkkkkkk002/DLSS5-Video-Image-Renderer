@@ -448,10 +448,10 @@
 
     <div class="card" id="exportCard">
       <h2>视频导出与预览</h2>
-      <div style="display:grid; grid-template-columns:250px 1fr; gap:12px; align-items:end;">
+      <div style="display:grid; grid-template-columns:100px minmax(300px,350px); gap:12px; align-items:end;">
         <label class="field">
           <span>导出编码器</span>
-          <select id="encoder" style="width:100%;">
+          <select id="encoder" style="width:100%;" title="点击展开查看全部编码器说明">
             <option value="h264_nvenc">h264_nvenc · 8bit（最快、最兼容）</option>
             <option value="hevc_nvenc">hevc_nvenc · 8bit（小体积、需较新播放器）</option>
             <option value="libx264">libx264 · 8bit（软编、画质高、慢）</option>
@@ -461,7 +461,7 @@
           </select>
         </label>
         <label class="field">
-          <span>输出路径（留空=项目根 outputs/；可填文件或文件夹）</span>
+          <span style="white-space:nowrap; font-size:12px;">输出路径（留空=outputs/；可填文件或文件夹）</span>
           <div style="display:flex; gap:8px;">
             <input type="text" id="output" placeholder="留空 = <项目根>/outputs/" style="flex:1;">
             <button class="btn" id="outputPickBtn" style="flex:0 0 auto;">选择文件夹…</button>
