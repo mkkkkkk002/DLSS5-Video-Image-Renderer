@@ -697,34 +697,40 @@
   vA.addEventListener('timeupdate', renderTime);
   vA.addEventListener('play', () => { setPlayIcon(); try { if (vB.paused) vB.play().catch(() => { }); } catch (e) { /* ignore */ } });
   vB.addEventListener('play', () => { if (!vA.paused) { /* both playing */ } });
-  vA.addEventListener('pause', () => { setPlayIcon(); if (!vB.paused) vB.pause(); });
-  vB.addEventListener('pause', () => { if (!vA.paused) vA.pause(); });
+  vA.addEventListener('pause', () => { setPlayIcon(); try { if (!vB.paused) vB.pause(); } catch (e) { /* ignore */ } });
+  vB.addEventListener('pause', () => { try { if (!vA.paused) vA.pause(); } catch (e) { /* ignore */ } });
   let restarting = false;
+  const playBoth = () => { kick(vA); kick(vB); };
+  // master/slave sync: master = rendered (vA), slave = original (vB).
+  // Correct large drift only (>0.12s ~ 3 frames) so the picture doesn't jump constantly;
+  // start-of-play and seeks always force a hard align.
+  const syncSlave = (force) => {
+    if (!inited) return;
+    try {
+      if (force || Math.abs(vB.currentTime - vA.currentTime) > 0.12) {
+        vB.currentTime = Math.min(vA.currentTime || 0, vB.duration || (vA.currentTime || 0));
+      }
+    } catch (e) { /* ignore */ }
+  };
   const restartAll = () => {
     if (restarting) return;
     restarting = true;
     try { vA.pause(); vB.pause(); } catch (e) { /* ignore */ }
     try { vA.currentTime = 0; vB.currentTime = 0; } catch (e) { /* ignore */ }
-    setTimeout(() => { restarting = false; }, 120);
-    try { vA.play().catch(() => { }); } catch (e) { /* ignore */ }
-    try { if (vB.paused) vB.play().catch(() => { }); } catch (e) { /* ignore */ }
+    setTimeout(() => { restarting = false; }, 150);
+    playBoth();                                 // both rewind together, muted => allowed
   };
-  const maybeRestart = (v) => {
-    const d = v.duration;
-    if (!restarting && d > 0 && v.currentTime >= d - 0.06) restartAll();
+  const maybeRestart = () => {
+    const d = vA.duration;
+    if (!restarting && inited && d > 0 && vA.currentTime >= d - 0.08) restartAll();
   };
-  vA.addEventListener('timeupdate', () => maybeRestart(vA));
-  vB.addEventListener('timeupdate', () => maybeRestart(vB));
-  vA.addEventListener('ended', restartAll);   // fallback only
-  vB.addEventListener('ended', restartAll);
-
-  // drift correction while playing
-  setInterval(() => {
-    if (!vA.paused && vB.currentTime != null && vA.currentTime != null &&
-        Math.abs(vA.currentTime - vB.currentTime) > 0.05) {
-      try { vB.currentTime = vA.currentTime; } catch (e) { /* ignore */ }
-    }
-  }, 500);
+  vA.addEventListener('play', () => { setPlayIcon(); syncSlave(true); try { if (vB.paused) vB.play().catch(() => { }); } catch (e) { /* ignore */ } });
+  vB.addEventListener('play', () => { /* master decides */ });
+  vA.addEventListener('timeupdate', () => { renderTime(); maybeRestart(); syncSlave(false); });
+  vA.addEventListener('seeked', () => syncSlave(true));
+  vB.addEventListener('seeked', () => syncSlave(true));
+  vA.addEventListener('ended', restartAll);
+  vB.addEventListener('ended', () => { if (!restarting && vB.duration && vA.currentTime >= vB.duration - 0.05) restartAll(); });
 
   playB.addEventListener('click', async () => {
     if (!vA.src) return;

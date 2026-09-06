@@ -874,6 +874,14 @@ const server = http.createServer(async (req, res) => {
         if (!body.input) {
             return sendJson(res, 400, { ok: false, error: 'input is required' });
         }
+        const _st = parseFloat(body.startTime) || 0;
+        const _et = parseFloat(body.endTime) || 0;
+        if (_st < 0 || _et < 0) {
+            return sendJson(res, 400, { ok: false, error: '开始/结束时间不能为负数' });
+        }
+        if (_et > 0 && _et <= _st) {
+            return sendJson(res, 400, { ok: false, error: '结束时间必须大于开始时间 (' + _st + 's -> ' + _et + 's)' });
+        }
         return sendJson(res, 200, startJob(body));
     }
 
