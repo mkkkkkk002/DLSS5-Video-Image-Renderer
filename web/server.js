@@ -592,17 +592,21 @@ async function preEnhanceRun(inputPath, startS, endS, onStats) {
         const dec = ['-i', inputPath, '-start_number', '0'];
         if (wStart > 0) dec.push('-ss', String(wStart));
         if (wEnd > 0 && full > 0) dec.push('-to', String(wEnd));
-        dec.push('-vsync', '0', '-fps_mode', 'passthrough', '-q:v', '1',
-                 path.join(dirF, 'f_%06d.png'));
+        dec.push('-vsync', '0', '-fps_mode', 'passthrough', '-q:v', '2',
+                 path.join(dirF, 'f_%06d.jpg'));
         await runCounted(dec, dirF, estFrames, tick);
         let frames = 0;
         try { frames = fs.readdirSync(dirF).length; } catch (e) { /* ignore */ }
         if (frames === 0) throw new Error('预处理: 没有解出任何帧(窗口为空?)');
         tick(0, 'Real-ESRGAN 4x…');
-        await runRealesrPct(exe, ['-i', dirF, '-o', dirO, '-n', model, '-s', '4', '-f', 'png'],
+        // jpg output (vs png) halves the write/encode cost of the 4x frames -- PNG at 8K+ can
+        // hit 100MB+/frame and looks like a freeze on real footage. Lossy jpg is fine: the frame
+        // is scaled back down to source res immediately, and DLSSNR re-renders anyway.
+        await runRealesrPct(exe, ['-i', dirF, '-o', dirO, '-n', model, '-s', '4', '-f', 'jpg',
+                                  '-j', '4:4:4'],
                             frames, (d, t) => tick(d, 'Real-ESRGAN 4x…'));
         tick(frames, '缩回原尺寸并无损编码…');
-        await runFfmpeg(['-framerate', String(fps), '-i', path.join(dirO, 'f_%06d.png'),
+        await runFfmpeg(['-framerate', String(fps), '-i', path.join(dirO, 'f_%06d.jpg'),
                          '-vf', 'scale=' + W + ':' + H + ':flags=lanczos',
                          '-pix_fmt', 'yuv420p', '-c:v', 'libx264', '-qp', '0',
                          '-preset', 'ultrafast', outMp4]);
