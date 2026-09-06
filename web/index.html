@@ -525,7 +525,7 @@
         <button class="btn" id="vdMute" title="静音渲染后音频">🔊</button>
         <input type="range" id="vdVol" min="0" max="100" value="100" title="渲染后音量(原视频静音,避免双声道回响)">
       </div>
-      <div class="status" id="vdStatus" style="display:none;"></div>
+      <div class="status" id="vdStatus">渲染完成后自动导入原视频与渲染结果；也可点击上方按钮手动加载视频</div>
     </div>
   </div>
 
@@ -564,11 +564,10 @@
 <style>
 .vcompare {
   position: relative; background:#000; border-radius:8px; overflow:hidden;
-  cursor: ew-resize; user-select:none; display:inline-flex;
-  align-items:center; justify-content:center; max-width:100%;
+  cursor: ew-resize; user-select:none; display:block; width:100%;
 }
-.vcompare .vstage { position:relative; max-width:100%; max-height:62vh; line-height:0; }
-.vcompare video { display:block; max-width:100%; max-height:62vh; background:#000; object-fit:contain; }
+.vcompare .vstage { position:relative; width:100%; }
+.vcompare video { display:block; width:100%; height:auto; max-height:62vh; background:#000; object-fit:contain; }
 .vcompare .vtop { position:absolute; inset:0; clip-path:inset(0 100% 0 0); pointer-events:none; }
 .vcompare .vtop video { width:100%; height:100%; object-fit:contain; }
 .vcompare .divider { position:absolute; top:0; bottom:0; width:2px; background:rgba(255,255,255,.85);
@@ -587,7 +586,8 @@
 .vctrl .time { color: #cfcfcf; font-family: var(--mono); font-size: 12px; }
 .vctrl input[type=range] { accent-color: #7ab8ff; }
 .vctrl .sp { flex: 1 1 20px; }
-.vcompare.empty { min-height: 220px; min-width: 100%; }
+.vcompare.empty { min-height: 220px; }
+.vcompare.empty .vstage { min-height: 220px; }
 </style>
 <script>
 // ----------------------------------------------------------------- video side-by-side compare
@@ -611,7 +611,7 @@
   const onReady = (side) => { ready[side] = true; if (ready.a && ready.b && !inited) {
       inited = true;
       ctrl.hidden = false;
-      st.style.display='none'; st.textContent='';
+      
       syncTo(vB.currentTime || 0);
     } };
 
@@ -630,7 +630,7 @@
     applyLabels();
     box.classList.remove('empty');
     ctrl.hidden = true;
-    st.style.display='none'; st.textContent='';
+    
     playB.textContent = '▶';
   }
   function load(a, b, auto) {
