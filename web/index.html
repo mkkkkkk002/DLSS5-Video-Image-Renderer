@@ -577,6 +577,17 @@
 .vctrl { display:flex; align-items:center; gap:10px; margin-top:8px; flex-wrap:wrap; }
 .vctrl input[type=range] { flex:1 1 120px; min-width:80px; }
 .vctrl .time { font-size:12px; color:var(--dim); white-space:nowrap; }
+.vctrl {
+  background: rgba(14,14,16,.94); border-radius: 6px; padding: 5px 10px;
+  color: #eee; gap: 8px;
+}
+.vctrl .btn { background: transparent; border: none; color: #eee; padding: 2px 6px; min-width: auto; font-size: 15px; cursor: pointer; }
+.vctrl .btn:hover { background: rgba(255,255,255,.14); }
+.vctrl .btn:disabled { opacity: .35; }
+.vctrl .time { color: #cfcfcf; font-family: var(--mono); font-size: 12px; }
+.vctrl input[type=range] { accent-color: #7ab8ff; }
+.vctrl .sp { flex: 1 1 20px; }
+.vcompare.empty { min-height: 220px; min-width: 100%; }
 </style>
 <script>
 // ----------------------------------------------------------------- video side-by-side compare
