@@ -598,7 +598,7 @@
   const playB = $('vdPlay'), seek = $('vdSeek'), timeT = $('vdTime');
   const vol = $('vdVol'), muteB = $('vdMute'), ctrl = $('vdCtrl'), st = $('vdStatus');
   let ready = { a: false, b: false };
-  let dragging = false, syncing = false, curMuted = true, inited = false;
+  let dragging = false, syncing = false, curMuted = true, inited = false, autoNext = false;
   window.__vdManual = false;             // user picked videos manually -> don't auto-overwrite
   window.__vdAutoDone = false;
 
@@ -611,6 +611,11 @@
   const onReady = (side) => { ready[side] = true; if (ready.a && ready.b && !inited) {
       inited = true;
       zoomB.disabled = false;
+      if (autoNext) {                       // auto-imported after a render -> start playing (muted)
+        try { vA.play().catch(() => { }); } catch (e) { /* ignore */ }
+        try { if (vB.paused) vB.play().catch(() => { }); } catch (e) { /* ignore */ }
+        autoNext = false;
+      }
       ctrl.hidden = false;
       
       syncTo(vB.currentTime || 0);
@@ -640,7 +645,7 @@
   function load(a, b, auto) {
     if (!a || !b) return;
     if (!auto) window.__vdManual = true;
-    roleA = a; roleB = b; flipped = false;
+    roleA = a; roleB = b; flipped = false; autoNext = !!auto;
     applyLayout();
   }
   function syncTo(t) {
