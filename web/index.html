@@ -437,8 +437,6 @@
             <option value="hevc_nvenc">hevc_nvenc · 8bit（小体积、需较新播放器）</option>
             <option value="libx264">libx264 · 8bit（软编、画质高、慢）</option>
             <option value="libx265">libx265 · 8bit（体积最小、CPU 慢）</option>
-            <option value="hevc_nvenc_10bit">hevc_nvenc · 10bit（无渐变色带、GPU 快）</option>
-            <option value="libx265_10bit">libx265 · 10bit（无渐变色带、体积小、CPU 慢）</option>
           </select>
         </label>
         <label class="field">
@@ -454,41 +452,9 @@
         <input type="text" id="exportName" placeholder="留空 = 默认名（自动带 nr_ 前缀）">
       </label>
       <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
-      <label style="display:flex; gap:6px; align-items:center;">
-        <input type="checkbox" id="autoExportCk" checked>
-        <span style="font-size:12px;">渲染完成后自动按当前编码器 + 路径导出一次</span>
-      </label>
-      <div class="btn-row" style="margin-top:4px;">
+            <div class="btn-row" style="margin-top:4px;">
         <button class="btn primary" id="startBtn">开始处理</button>
         <button class="btn danger" id="cancelBtn" disabled>停止</button>
-        <button class="btn" id="exportMoreBtn" disabled title="渲染完成后可按其它格式再导出">另导出为…</button>
-      </div>
-      <div id="exportMoreBox"
-           style="display:none; margin-top:6px; padding:8px; background:#161a22; border:1px solid var(--line); border-radius:8px;">
-        <div style="display:grid; grid-template-columns:150px minmax(300px,350px); gap:12px; align-items:end;">
-          <label class="field">
-            <span>新的编码方式</span>
-            <select id="exportEnc2" style="width:100%;">
-              <option value="h264_nvenc">h264_nvenc · 8bit（最快、最兼容）</option>
-              <option value="hevc_nvenc">hevc_nvenc · 8bit（小体积、需较新播放器）</option>
-              <option value="libx264">libx264 · 8bit（软编、画质高、慢）</option>
-              <option value="libx265">libx265 · 8bit（体积最小、CPU 慢）</option>
-              <option value="hevc_nvenc_10bit">hevc_nvenc · 10bit（无渐变色带、GPU 快）</option>
-              <option value="libx265_10bit">libx265 · 10bit（无渐变色带、体积小、CPU 慢）</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>新的输出路径</span>
-            <div style="display:flex; gap:8px;">
-              <input type="text" id="exportPath2" placeholder="留空 = outputs/" style="flex:1;">
-              <button class="btn" id="outputPickBtn2" style="flex:0 0 auto;">选择文件夹…</button>
-            </div>
-          </label>
-        </div>
-        <div style="display:flex; gap:8px; align-items:center; margin-top:8px;">
-          <button class="btn primary" id="export2Btn">开始另导出</button>
-          <span class="meta" id="export2Status"></span>
-        </div>
       </div>
       <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
       <h3 style="font-size:13px; font-weight:600; color:var(--dim); margin:0 0 6px 0;">渲染进度</h3>
@@ -496,13 +462,6 @@
       <div class="status" id="statusText">空闲</div>
       <div class="meta" id="progStats" style="margin-top:2px; display:none;"></div>
       <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
-      <video id="resultVideo" controls playsinline preload="metadata"
-             style="display:none; width:100%; max-height:38vh; background:#000; border-radius:8px; margin-top:8px;"></video>
-      <div id="exportProgressBox" style="margin-top:6px;">
-        <h3 style="font-size:13px; font-weight:600; color:var(--dim); margin:0 0 6px 0;">导出进度</h3>
-        <div class="bar"><i id="exportBar"></i></div>
-        <div class="status" id="exportPctTxt">0%</div>
-      </div>
       <div class="status done" id="exportMsg" style="margin-top:6px; display:none;"></div>
     </div>
 
@@ -889,19 +848,8 @@ function renderStatus(s) {
     if (s.code === 0) {
       st.textContent = '渲染完成';
       st.className = 'status done';
-      if (s.master) {
-        window.__master = s.master;
-        $('exportMoreBtn').disabled = false;
-        if (s.preview) {
-          const v = $('resultVideo');
-          v.src = '/api/video?path=' + encodeURIComponent(s.preview);
-          v.style.display = '';
-        }
-        // Auto-export once with the encoder/path chosen above (only if the checkbox is on).
-        if ($('autoExportCk') && $('autoExportCk').checked && !window.__autoExportDone) {
-          window.__autoExportDone = true;
-          setTimeout(() => startExport($('encoder').value, $('output').value.trim()), 400);
-        }
+      if (s.output) {
+        showExportMsg('渲染完成，视频已保存至：' + s.output, false);
       }
       showStats(totalF > 0
         ? `共 ${totalF} 帧 · 平均 ${fps.toFixed(1)} 帧/秒 · 用时 ${fmtDur(s.elapsedSec)}`
@@ -959,107 +907,12 @@ function buildJobCfg() {
     };
 }
 
-// ------------------------------------------------------------ export (two-stage)
-let exportTimer = null;
-let lastExportOut = null;
-
 function showExportMsg(text, isErr) {
   const m = $('exportMsg');
   m.textContent = text;
   m.className = isErr ? 'status err' : 'status done';
   m.style.display = '';
 }
-
-async function startExport(enc, outPath) {
-  const master = window.__master;
-  if (!master) { showExportMsg('无可导出的主片（请先成功渲染）', true); return false; }
-  if (window.__expBusy) { showExportMsg('已有导出正在进行，请稍候', true); return false; }
-  window.__expBusy = true;
-  $('exportMsg').style.display = 'none';
-  $('exportProgressBox').style.display = '';
-  $('exportBar').style.width = '0%';
-  $('exportPctTxt').textContent = '0%';
-  try {
-    const r = await fetch('/api/export', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        master,
-        encoder: enc,
-        output: outPath || '',
-        fileName: ($('exportName') ? $('exportName').value : '').trim(),
-      }),
-    }).then((x) => x.json());
-    if (!r.ok || !r.started) {
-      window.__expBusy = false;
-      showExportMsg('导出失败：' + (r.error || '未知'), true);
-      return false;
-    }
-    lastExportOut = r.output;
-    if (exportTimer) clearInterval(exportTimer);
-    exportTimer = setInterval(async () => {
-      try {
-        const s = await fetch('/api/status').then((x) => x.json());
-        tickExport(s.export || {});
-      } catch (e) { /* transient */ }
-    }, 1000);
-    return true;
-  } catch (e) {
-    window.__expBusy = false;
-    showExportMsg('导出出错：' + e.message, true);
-    return false;
-  }
-}
-
-function tickExport(e) {
-  if (e.running) {
-    $('exportBar').style.width = (e.pct || 0) + '%';
-    $('exportPctTxt').textContent = (e.pct || 0) + '%';
-    return;
-  }
-  if (exportTimer) { clearInterval(exportTimer); exportTimer = null; }
-  if (e.error) {
-    window.__expBusy = false;
-    showExportMsg('导出失败：' + e.error, true);
-    return;
-  }
-  if (e.pct === 100 && lastExportOut) {
-    window.__expBusy = false;
-    $('exportBar').style.width = '100%';
-    $('exportPctTxt').textContent = '100%';
-    showExportMsg('视频已保存至指定路径：' + lastExportOut +
-      '，如需采用其它编码方式，点击上方「另导出为」。', false);
-  }
-}
-
-$('exportMoreBtn').addEventListener('click', () => {
-  const box = $('exportMoreBox');
-  const show = box.style.display === 'none';
-  box.style.display = show ? '' : 'none';
-  if (show && lastExportOut) $('exportPath2').placeholder = '例如：' + lastExportOut;
-});
-
-$('export2Btn').addEventListener('click', () => {
-  const enc = $('exportEnc2').value;
-  const p = $('exportPath2').value.trim();
-  startExport(enc, p);
-});
-
-$('outputPickBtn2').addEventListener('click', async () => {
-  const input = $('input').value.trim();
-  try {
-    const r = await fetch('/api/save-file?input=' + encodeURIComponent(input)).then((x) => x.json());
-    if (r.ok) {
-      const sep = r.dir.includes('\\') ? '\\' : '/';
-      const tail = r.dir.endsWith('\\') || r.dir.endsWith('/') ? '' : sep;
-      $('exportPath2').value = r.dir + tail;
-    } else if (!r.cancelled) {
-      logError('选择输出文件夹失败: ' + (r.error || 'unknown'));
-    }
-  } catch (e) {
-    logError('选择输出文件夹失败: ' + e.message);
-  }
-});
 
 $('startBtn').addEventListener('click', async () => {
   const input = $('input').value.trim();
@@ -1069,7 +922,8 @@ $('startBtn').addEventListener('click', async () => {
   }
   const body = Object.assign({
     input,
-    output: $('output').value.trim(),   // 留空则由服务端自动生成不重名文件
+    output: $('output').value.trim(),   // 文件夹；留空 = <项目根>/outputs/
+    fileName: $('exportName').value.trim(), // 留空 = 默认名（nr_ 前缀）
     startTime: parseFloat($('startTime').value) || 0,
     endTime: parseFloat($('endTime').value) || 0,
   }, buildJobCfg());
@@ -1077,18 +931,7 @@ $('startBtn').addEventListener('click', async () => {
   $('startBtn').disabled = true;
   $('cancelBtn').disabled = false;
   $('statusText').textContent = '启动中…';
-  $('exportBar').style.width = '0%';
-  $('exportPctTxt').textContent = '0%';
   $('exportMsg').style.display = 'none';
-  $('exportMoreBox').style.display = 'none';
-  $('export2Status').textContent = '';
-  $('exportMoreBtn').disabled = true;
-  const rv = $('resultVideo');
-  rv.removeAttribute('src');
-  rv.style.display = 'none';
-  window.__master = null;
-  window.__autoExportDone = false;
-  lastExportOut = null;
 
   const r = await fetch('/api/start', {
     method: 'POST',
@@ -1096,8 +939,8 @@ $('startBtn').addEventListener('click', async () => {
     body: JSON.stringify(body),
   }).then((x) => x.json());
 
-  if (r.ok && r.master) {
-    window.__master = r.master;
+  if (r.ok && r.output) {
+    // nothing to remember -- the engine writes the final file directly (v1.2 flow)
   }
 
   if (timer) clearInterval(timer);

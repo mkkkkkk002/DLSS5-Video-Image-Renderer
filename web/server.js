@@ -502,20 +502,22 @@ function startJob(cfg) {
     if (current && !current.finished) {
         return { ok: false, error: 'a job is already running' };
     }
-
-    // Two-stage flow: rendering always writes a LOSSLESS HEVC10 master. The master lives in the
-    // frame/cache dir (cleaned on shutdown/restart -- see the guard), NOT in outputs/, because it
-    // is only an export source; the user-visible final files come from /api/export later.
     if (!fs.existsSync(findEngine())) {
         return { ok: false, error: 'engine not found: ' + findEngine() };
     }
-    fs.mkdirSync(FRAME_DIR, { recursive: true });
-    const ext = path.extname(cfg.input) || '.mp4';
-    const masterPath = uniquePath(FRAME_DIR, 'master_' + path.basename(cfg.input, ext) + ext);
+    // v1.2-style single-stage render: the chosen encoder writes the FINAL file directly (no
+    // lossless master, no browser preview step). File name honours the dedicated file-name
+    // field (or defaults to nr_<input>.mp4); the output field is a folder (or blank = outputs/).
+    const inputStem = path.basename(cfg.input).replace(/\.[^.]+$/, '');
+    const name = (cfg.fileName || '').trim();
+    const defaultName = name
+        ? (/\.[A-Za-z0-9]{1,5}$/.test(name) ? name : name + '.mp4')
+        : 'nr_' + inputStem + '.mp4';
+    const finalOut = resolveExportPath(cfg.output, defaultName);
 
     const job = {
         id: nextId++,
-        steps: buildSteps(cfg, masterPath),
+        steps: buildSteps(cfg, finalOut),
         passIndex: 0,            // which step is running (0-based)
         done: 0,
         total: 0,
@@ -527,18 +529,18 @@ function startJob(cfg) {
         cancelled: false,
         code: null,
         cfg,
-        output: masterPath,      // the lossless master (browser may not play it; see preview)
-        master: masterPath,
-        preview: null,           // 8-bit H.264 browser preview, filled in after the job finishes
-        export: null,            // last exported final file ({output, url}) from /api/export
+        output: finalOut,
+        master: null,
+        preview: null,
+        export: null,
     };
     current = job;
     if (job.steps.length > 1) {
         job.lines.push(
-            `whole-video multi-pass: ${job.steps.length} full renders in series (master = ${masterPath})`);
+            `whole-video multi-pass: ${job.steps.length} full renders in series (final = ${finalOut})`);
     }
     runNextPass(job);
-    return { ok: true, id: job.id, master: masterPath, passes: job.steps.length };
+    return { ok: true, id: job.id, output: finalOut, passes: job.steps.length };
 }
 
 function jobFinish(job, cancelled) {
@@ -548,22 +550,10 @@ function jobFinish(job, cancelled) {
         job.cancelled = true;
         job.finished = true;
         job.code = null;
-        // The (possibly partial) master was only a render intermediate: remove it.
-        try {
-            if (job.master && fs.existsSync(job.master)) fs.unlinkSync(job.master);
-        } catch (e) { /* ignore */ }
     } else {
-        job.lines.push('DONE after ' + job.steps.length + ' pass(es): ' + job.master);
+        job.lines.push('DONE after ' + job.steps.length + ' pass(es): ' + job.output);
         job.finished = true;
         job.code = 0;
-        // Build the 8-bit browser preview in the background; the UI polls /api/status and shows
-        // it when job.preview appears.
-        makeBrowserPreview(job.master).then((p) => {
-            if (p) {
-                job.preview = p;
-                job.lines.push('preview ready (select an encoder to export)');
-            }
-        });
     }
 }
 
