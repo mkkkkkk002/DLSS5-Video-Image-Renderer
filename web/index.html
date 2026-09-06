@@ -500,11 +500,11 @@
 
     <div class="card" id="vdCard" style="margin-top:10px;">
       <h2>视频对比</h2>
-      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
-        <button class="btn" id="vdPickA" title="选择原视频(左/上层)">选原视频…</button>
-        <button class="btn" id="vdPickB" title="选择渲染后的视频(右/下层)">选渲染后…</button>
-        <button class="btn" id="vdSwap" title="交换左右">⇄ 交换</button>
-        <button class="btn" id="vdZoom" style="margin-left:auto;" title="全屏放大对比,拖动分隔条细看">放大对比</button>
+      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
+        <button class="btn" id="vdPickA">选原视频</button>
+        <button class="btn" id="vdSwap" style="font-size:16px; padding:6px 8px;">⇄</button>
+        <button class="btn" id="vdPickB">选渲染后</button>
+        <button class="btn" id="vdZoom">放大对比</button>
       </div>
       <div class="vcompare empty" id="vdBox">
         <div class="vstage" id="vdStage">
@@ -525,7 +525,7 @@
         <button class="btn" id="vdMute" title="静音渲染后音频">🔊</button>
         <input type="range" id="vdVol" min="0" max="100" value="100" title="渲染后音量(原视频静音,避免双声道回响)">
       </div>
-      <div class="status" id="vdStatus">渲染完成会自动载入前后视频;也可手动选择。拖动画面左右对比 · 下方进度条同步播放</div>
+      <div class="status" id="vdStatus" style="display:none;"></div>
     </div>
   </div>
 
@@ -600,7 +600,7 @@
   const onReady = (side) => { ready[side] = true; if (ready.a && ready.b && !inited) {
       inited = true;
       ctrl.hidden = false;
-      st.textContent = '拖动画面左右对比 · 左=原视频 · 下方进度条同步播放(原视频静音)';
+      st.style.display='none'; st.textContent='';
       syncTo(vB.currentTime || 0);
     } };
 
@@ -619,7 +619,7 @@
     applyLabels();
     box.classList.remove('empty');
     ctrl.hidden = true;
-    st.textContent = '加载视频…';
+    st.style.display='none'; st.textContent='';
     playB.textContent = '▶';
   }
   function load(a, b, auto) {
@@ -699,13 +699,13 @@
   function srcOf(v) { const m = /path=([^&]*)/.exec(v.src || ''); return m ? decodeURIComponent(m[1]) : null; }
   $('vdPickA').addEventListener('click', async () => {
     const r = await fetch('/api/pick-video').then((x) => x.json());
-    if (!r.ok) { if (!r.cancelled) st.textContent = '选择失败: ' + (r.error || '?'); return; }
+    if (!r.ok) { if (!r.cancelled) { st.style.display=''; st.textContent = '选择失败: ' + (r.error || '?'); } return; }
     const other = srcOf(vA);
     load(r.path, other || r.path);
   });
   $('vdPickB').addEventListener('click', async () => {
     const r = await fetch('/api/pick-video').then((x) => x.json());
-    if (!r.ok) { if (!r.cancelled) st.textContent = '选择失败: ' + (r.error || '?'); return; }
+    if (!r.ok) { if (!r.cancelled) { st.style.display=''; st.textContent = '选择失败: ' + (r.error || '?'); } return; }
     const other = srcOf(vB);
     load(other || r.path, r.path);
   });
@@ -720,7 +720,7 @@
   const setZoom = (on) => {
     vdCard.classList.toggle('vd-zoom', on);
     zoomB.textContent = on ? '✕ 退出放大' : '放大对比';
-    zoomB.title = on ? '退出全屏对比 (Esc)' : '全屏放大对比,拖动分隔条细看';
+    
   };
   zoomB.addEventListener('click', () => setZoom(!vdCard.classList.contains('vd-zoom')));
   document.addEventListener('keydown', (e) => {
