@@ -206,6 +206,57 @@ static void finalizeToRgba8(const uint8_t* inRGBA, const uint8_t* outF16, uint8_
     }
 }
 
+// 16-bit final image: residual-blend the 16F NR result with the 8-bit input in float, then
+// scale to 0..65535 WITHOUT dither (65536 levels make banding physically impossible). Used by
+// --png16 for the first rendered frame (image path): no 8-bit quantisation ever happens.
+static void finalize16(const uint8_t* inRGBA, const uint8_t* outF16, uint16_t* dst, uint32_t width,
+                       uint32_t height, float residualMult) {
+    float m = residualMult;
+    if (m < 0.f) m = 0.f;
+    if (m > 2.f) m = 2.f;
+    const float inW = 1.f - m;
+    for (uint32_t y = 0; y < height; ++y) {
+        const uint8_t* in = inRGBA + (size_t)y * width * 4;
+        const uint16_t* h = (const uint16_t*)(outF16 + (size_t)y * width * 8);
+        uint16_t* o = dst + (size_t)y * width * 4;
+        for (uint32_t x = 0; x < width; ++x, in += 4, h += 4, o += 4) {
+            float r = halfToFloat(h[0]), g = halfToFloat(h[1]), b = halfToFloat(h[2]);
+            if (inW != 0.f) {
+                const float inv = 1.f / 255.f;
+                r = inW * (float)in[0] * inv + m * r;
+                g = inW * (float)in[1] * inv + m * g;
+                b = inW * (float)in[2] * inv + m * b;
+            }
+            if (r < 0.f) r = 0.f; else if (r > 1.f) r = 1.f;
+            if (g < 0.f) g = 0.f; else if (g > 1.f) g = 1.f;
+            if (b < 0.f) b = 0.f; else if (b > 1.f) b = 1.f;
+            o[0] = (uint16_t)(int)(r * 65535.f + 0.5f);
+            o[1] = (uint16_t)(int)(g * 65535.f + 0.5f);
+            o[2] = (uint16_t)(int)(b * 65535.f + 0.5f);
+            o[3] = 65535;
+        }
+    }
+}
+
+// Writes a 16-bit RGB PNG through ffmpeg (raw rgba64le -> rgb48be PNG), encoding one frame.
+static bool writePng16(const std::string& pathUtf8, uint32_t width, uint32_t height,
+                       const uint16_t* rgba16) {
+    std::wstring cmd = L"ffmpeg -y -loglevel error -f rawvideo -pix_fmt rgba64le -s " +
+                       std::to_wstring(width) + L"x" + std::to_wstring(height) +
+                       L" -i - -frames:v 1 -pix_fmt rgb48be \"" + widen(pathUtf8) + L"\"";
+    FILE* p = _wpopen(cmd.c_str(), L"wb");
+    if (!p) return false;
+    const size_t row = (size_t)width * 4 * 2;
+    const char* src = (const char*)rgba16;
+    for (uint32_t y = 0; y < height; ++y) {
+        if (fwrite(src + (size_t)y * row, 1, row, p) != row) {
+            _pclose(p);
+            return false;
+        }
+    }
+    return _pclose(p) == 0;
+}
+
 struct Options {
     std::string input;
     std::string output;
@@ -228,6 +279,8 @@ struct Options {
     bool frameReset = false;   // Per-frame reset: treat every frame independently (like a
                                // real-time filter over a video window, no cross-frame history)
     bool perf = false;         // --perf: print per-stage ms/frame breakdown at the end
+    bool bypassNr = false;     // --bypass-nr: skip DLSS NR inference (diagnostic passthrough)
+    std::string png16;         // --png16 <path>: write first frame as a 16-bit PNG (no banding)
     DlssNrSettings nr;
 };
 
@@ -248,7 +301,11 @@ void usage() {
         "  --codec-args <s>     extra arguments appended to the encoder\n"
         "  --pix-fmt <s>         output pixel format (default yuv420p; yuv444p keeps 4:4:4 chroma)\n"
         "  --frame-reset        process every frame independently (no cross-frame history),\n"
-        "                       matching how a real-time filter over a video behaves\n\n"
+        "                       matching how a real-time filter over a video behaves\n"
+        "  --bypass-nr          skip the DLSS NR inference (diagnostic: input -> colour/dither\n"
+        "                       path only, lets you isolate model artifacts from banding/grid)\n"
+        "  --png16 <png>        write the first rendered frame as a 16-bit RGB PNG (65536 levels,\n"
+        "                       no 8-bit quantisation => no colour banding; used by the image path)\n\n"
         "  Model controls (latched at feature creation):\n"
         "  --preset <0..3>            NR Preset\n"
         "  --intensity <f>            NR Intensity\n"
@@ -481,7 +538,9 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
             st.blendTargets = true;
         }
     }
-    const bool useGpuBlend = st.blendInit && st.blendTargets && st.blend.ok();
+    // GPU finalisation is disabled for --png16: the 16F model result must be read back (not
+    // quantised to 8-bit on the GPU) so the 16-bit PNG keeps full precision.
+    const bool useGpuBlend = st.blendInit && st.blendTargets && st.blend.ok() && opt.png16.empty();
 
     // ---------------------------------------------------------------- io window
     double durationSec = 0.0;
@@ -843,15 +902,23 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
         auto tG = T();
         bool ok = st.ctx.execSync(
             [&](ID3D12GraphicsCommandList* cmd) {
-                if (useNvof) st.densify.record(cmd);   // sparse grid -> full-res texMvec
-                result = st.nr.evaluate(cmd, st.params.ptr(), st.texColor.Get(), st.texDepth.Get(),
-                                        st.texMvec.Get(), st.texOutput.Get(), useW, useH, useW, useH,
-                                        opt.nr, opt.frameReset || done == 0);
-                if (useGpuBlend) st.blend.record(cmd, opt.residualMult);
+                if (opt.bypassNr) {
+                    // Diagnostic passthrough: skip DLSS NR (and its motion densify) entirely,
+                    // still run the final colour path (residual 0 => pure input + dither), so
+                    // banding / grid can be attributed to the model vs the colour pipeline.
+                    result = 1;
+                } else {
+                    if (useNvof) st.densify.record(cmd);   // sparse grid -> full-res texMvec
+                    result = st.nr.evaluate(cmd, st.params.ptr(), st.texColor.Get(),
+                                            st.texDepth.Get(), st.texMvec.Get(),
+                                            st.texOutput.Get(), useW, useH, useW, useH, opt.nr,
+                                            opt.frameReset || done == 0);
+                }
+                if (useGpuBlend) st.blend.record(cmd, opt.bypassNr ? 0.0f : opt.residualMult);
             },
             "densify+evaluate+blend");
         auto tH = T();
-        addNs(perf.evaluate, tG, tH);
+        if (!opt.bypassNr) addNs(perf.evaluate, tG, tH);
         if (!ok || result != 1) {
             printf("ERROR: evaluate returned 0x%08X at frame %lld\n", (unsigned)result, done);
             stopped = true;
@@ -882,6 +949,17 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
             // Fallback path: CPU residual blend + Bayer dither from the 16F readback.
             finalizeToRgba8(inP, outF16.data(), outBuf.data(), (uint32_t)useW, (uint32_t)useH,
                             opt.residualMult);
+        }
+        if (!useGpuBlend && done == 0 && !opt.png16.empty()) {
+            // 16-bit first-frame export: full 16F precision, no 8-bit quantisation at all.
+            std::vector<uint16_t> rgba16((size_t)useW * useH * 4);
+            finalize16(inP, outF16.data(), rgba16.data(), (uint32_t)useW, (uint32_t)useH,
+                       opt.residualMult);
+            if (writePng16(opt.png16, useW, useH, rgba16.data()))
+                printf("wrote 16-bit PNG -> %s\n", opt.png16.c_str());
+            else
+                printf("WARNING: cannot write 16-bit PNG %s (is ffmpeg on PATH?)\n",
+                       opt.png16.c_str());
         }
         auto tL = T();
         addNs(perf.residual, tK, tL);
@@ -1076,6 +1154,8 @@ int wmain(int argc, wchar_t** argv) {
         else if (a == "--auto-mask") parseInt(v.c_str(), opt.nr.useAutoMask);
         else if (a == "--ui-correction") parseInt(v.c_str(), opt.nr.uiCorrection);
         else if (a == "--frame-reset") { opt.frameReset = true; --i; }
+        else if (a == "--bypass-nr") { opt.bypassNr = true; --i; }
+        else if (a == "--png16") opt.png16 = v;
         else if (a == "--residual-mult") parseFloat(v.c_str(), opt.residualMult);
         else if (a == "--frame-guidance") parseInt(v.c_str(), opt.frameGuidance);
         else if (a == "--depth-interval") parseInt(v.c_str(), opt.depthInterval);

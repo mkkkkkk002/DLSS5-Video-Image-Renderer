@@ -1023,7 +1023,8 @@ const server = http.createServer(async (req, res) => {
         const ts = Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
         const srcMp4 = path.join(FRAME_DIR, `src_${ts}.mp4`);
         const outMp4 = path.join(FRAME_DIR, `out_${ts}.mp4`);
-        const renderedPath = path.join(FRAME_DIR, `rendered_${ts}.png`);
+        const rendered16 = path.join(FRAME_DIR, `rendered_${ts}_16.png`);
+        let renderedPath = rendered16;
 
         try {
             // 1) Loop the still into a 3-frame lossless clip. x264 -qp 0 (lossless) + 4:4:4 keeps
@@ -1054,12 +1055,22 @@ const server = http.createServer(async (req, res) => {
                 codecArgs: '-qp 0 -preset ultrafast',
             });
             const args = engineArgs(imgCfg, srcMp4, outMp4, true);
+            // Ask the engine for a TRUE 16-bit PNG of the first frame (model output at 16-bit
+            // float, residual-blended, scaled to 0..65535 -- no 8-bit quantisation, so smooth
+            // gradients cannot band). Requires the newer engine; older builds fall back below.
+            args.push('--png16', rendered16);
             await runEngine(exe, args);
 
-            // 3) First frame of the rendered clip == the still's rendered result.
-            await runFfmpeg([
-                '-i', outMp4, '-frames:v', '1', '-f', 'image2', renderedPath,
-            ]);
+            // 3) Result PNG: prefer the engine's 16-bit export; fall back to decoding the
+            //    lossless clip's first frame for older engines.
+            if (fs.existsSync(rendered16)) {
+                renderedPath = rendered16;
+            } else {
+                renderedPath = path.join(FRAME_DIR, `rendered_${ts}.png`);
+                await runFfmpeg([
+                    '-i', outMp4, '-frames:v', '1', '-f', 'image2', renderedPath,
+                ]);
+            }
 
             try { fs.unlinkSync(srcMp4); } catch (e) { /* ignore */ }
             try { fs.unlinkSync(outMp4); } catch (e) { /* ignore */ }
