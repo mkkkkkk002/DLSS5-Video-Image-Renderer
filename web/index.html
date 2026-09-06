@@ -704,13 +704,18 @@
   // master/slave sync: master = rendered (vA), slave = original (vB).
   // Correct large drift only (>0.12s ~ 3 frames) so the picture doesn't jump constantly;
   // start-of-play and seeks always force a hard align.
+  let lastAlign = 0;
   const syncSlave = (force) => {
     if (!inited) return;
-    try {
-      if (force || Math.abs(vB.currentTime - vA.currentTime) > 0.12) {
-        vB.currentTime = Math.min(vA.currentTime || 0, vB.duration || (vA.currentTime || 0));
-      }
-    } catch (e) { /* ignore */ }
+    const now = Date.now();
+    const dt = Math.abs(vB.currentTime - vA.currentTime);
+    // Frequent seeking is what makes the slave video stutter/drop frames (decode restarts on
+    // every jump). While playing, only correct when really far (>0.3s) and at most once per 2.5s;
+    // user actions (play / drag / restart) always force a hard align.
+    if (!force && (dt <= 0.3 || now - lastAlign < 2500)) return;
+    lastAlign = now;
+    try { vB.currentTime = Math.min(vA.currentTime || 0, vB.duration || (vA.currentTime || 0)); }
+    catch (e) { /* ignore */ }
   };
   const restartAll = () => {
     if (restarting) return;
