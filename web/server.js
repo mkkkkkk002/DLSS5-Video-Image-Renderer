@@ -551,7 +551,7 @@ function startJob(cfg) {
     if (!fs.existsSync(findEngine())) {
         return { ok: false, error: 'engine not found: ' + findEngine() };
     }
-    // v1.2-style single-stage render: the chosen encoder writes the FINAL file directly (no
+    // v1.3-style single-stage render: the chosen encoder writes the FINAL file directly (no
     // lossless master, no browser preview step). File name honours the dedicated file-name
     // field (or defaults to nr_<input>.mp4); the output field is a folder (or blank = outputs/).
     const inputStem = path.basename(cfg.input).replace(/\.[^.]+$/, '');
@@ -1483,25 +1483,39 @@ const server = http.createServer(async (req, res) => {
 
 // Bind to localhost only: the download/open endpoints serve arbitrary absolute paths now, and a
 // LAN-reachable server must not be able to leak local files.
-server.listen(PORT, '127.0.0.1', () => {
-    const url = 'http://127.0.0.1:' + PORT + '/';
-    console.log('DLSS5NR 视频渲染服务 v1.3 已启动 — Web 界面: ' + url);
-    fs.mkdirSync(OUTPUTS_DIR, { recursive: true });
-    cleanUploadsDir();   // fallback only: normal shutdown cleanup is done by server_guard.exe
-    cleanFrameDir();     // fallback only: normal shutdown cleanup is done by server_guard.exe
-    // When launched from start_ui.bat (--open), open the browser ourselves once the socket is
-    // live. Doing it in-process removes the fragile "wait for port then start" dance from the
-    // batch file, which was silently failing and leaving no browser open.
-    if (process.argv.includes('--open')) {
-        setTimeout(() => openBrowser(url), 500);
-    }
-    // Idle sweep: page gone (no polls) + no running/fresh job -> drop the disposable frame cache.
-    setInterval(() => {
-        const idleMs = Date.now() - uiLastPoll;
-        const jobBusy = current && !current.finished;
-        const jobFresh = current && (Date.now() - (current.t1 || 0)) < 30000;
-        if (!jobBusy && !jobFresh && idleMs > uiIdleGraceMs) {
-            cleanFrameDir();
+const BASE_PORT = Number(PORT) || 8777;
+// Bind on the base port; if a leftover instance still owns it (a very common "网页打不开 /
+// 响应时间过长" cause), step up through the next few ports instead of failing silently.
+function bindServer(port) {
+    server.once('error', (err) => {
+        if (err && err.code === 'EADDRINUSE' && port < BASE_PORT + 40) {
+            console.log('端口 ' + port + ' 被占用（可能是上次没完全退出），自动改用端口 ' + (port + 1));
+            bindServer(port + 1);
+        } else {
+            console.error('服务启动失败: ' + (err && err.message) + '。请检查是否有残留的 DLSS5NR/旧版进程占用端口。');
         }
-    }, 15000);
-});
+    });
+    server.listen(port, '127.0.0.1', () => {
+        const url = 'http://127.0.0.1:' + port + '/';
+        console.log('DLSS5NR 视频渲染服务 v1.3 已启动 — Web 界面: ' + url);
+        fs.mkdirSync(OUTPUTS_DIR, { recursive: true });
+        cleanUploadsDir();   // fallback only: normal shutdown cleanup is done by server_guard.exe
+        cleanFrameDir();     // fallback only: normal shutdown cleanup is done by server_guard.exe
+        // When launched from start_ui.bat (--open), open the browser ourselves once the socket
+        // is live. Doing it in-process removes the fragile "wait for port then start" dance
+        // from the batch file, which was silently failing and leaving no browser open.
+        if (process.argv.includes('--open')) {
+            setTimeout(() => openBrowser(url), 500);
+        }
+        // Idle sweep: page gone (no polls) + no running/fresh job -> drop the disposable cache.
+        setInterval(() => {
+            const idleMs = Date.now() - uiLastPoll;
+            const jobBusy = current && !current.finished;
+            const jobFresh = current && (Date.now() - (current.t1 || 0)) < 30000;
+            if (!jobBusy && !jobFresh && idleMs > uiIdleGraceMs) {
+                cleanFrameDir();
+            }
+        }, 15000);
+    });
+}
+bindServer(BASE_PORT);
