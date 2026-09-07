@@ -491,13 +491,15 @@
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:4px;">
         <button class="btn" id="imgBatchBtn">批量渲染文件夹…</button>
-        <select id="imgBatchFmt" style="padding:4px 8px; border-radius:4px; background:#222; color:#eee; border:1px solid #444;">
-          <option value="png">PNG</option>
-          <option value="jpg">JPG</option>
+        <span class="meta" style="font-size:12px;">输出格式</span>
+        <select id="imgBatchFmt" title="选择批量输出图片格式"
+                style="padding:2px 6px; font-size:12px; border-radius:4px; background:#ffffff; color:#111; border:1px solid #999; cursor:pointer;">
+          <option value="png">PNG（无损，推荐）</option>
+          <option value="jpg">JPG（体积小，适合照片）</option>
         </select>
         <button class="btn danger" id="imgBatchStop" disabled>停止</button>
-        <span class="meta" id="imgBatchInfo"></span>
       </div>
+      <div class="meta" id="imgBatchInfo" style="margin-top:4px; font-size:12px;"></div>
       <div class="meta" id="imgStatus" style="margin-top:6px;"></div>
       <div class="img-drop" id="imgDropZone"
            title="把图片文件拖到页面任意处,或用截图工具复制后在页面内按 Ctrl+V">
