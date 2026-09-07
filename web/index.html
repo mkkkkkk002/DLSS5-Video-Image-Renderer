@@ -489,15 +489,21 @@
         <button class="btn" id="imgZoomBtn" disabled title="打开全屏对比,鼠标拖动分隔条仔细看渲染差异">放大对比</button>
         <button class="btn" id="imgSaveBtn" disabled>保存渲染结果…</button>
       </div>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:4px;">
+      <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:4px;">
         <button class="btn" id="imgBatchBtn">批量渲染文件夹…</button>
         <span class="meta" style="font-size:12px;">输出格式</span>
-        <select id="imgBatchFmt" title="选择批量输出图片格式"
-                style="padding:2px 6px; font-size:12px; border-radius:4px; background:#ffffff; color:#111; border:1px solid #999; cursor:pointer;">
-          <option value="png">PNG（无损，推荐）</option>
-          <option value="jpg">JPG（体积小，适合照片）</option>
+        <select class="sel" id="imgBatchFmt" title="选择批量输出图片格式">
+          <option value="png">PNG（无损）</option>
+          <option value="jpg">JPG（小）</option>
         </select>
+        <button class="btn primary" id="imgBatchStart" disabled>开始渲染</button>
         <button class="btn danger" id="imgBatchStop" disabled>停止</button>
+      </div>
+      <div style="display:flex; gap:6px; align-items:center; margin-top:4px;">
+        <span class="meta" style="font-size:12px;">保存路径</span>
+        <input class="sel" id="imgBatchOut" type="text"
+               placeholder="留空=源目录下nr_xx文件夹"
+               style="flex:1; min-width:160px; padding:2px 6px; font-size:12px; background:#ffffff; color:#111; border:1px solid #999; border-radius:4px;">
       </div>
       <div class="meta" id="imgBatchInfo" style="margin-top:4px; font-size:12px;"></div>
       <div class="meta" id="imgStatus" style="margin-top:6px;"></div>
@@ -574,6 +580,10 @@
 </div>
 
 
+<!-- batch controls -->
+<style>
+.sel { padding:1px 4px; font-size:12px; }
+</style>
 <!-- video side-by-side compare styles -->
 <style>
 .vd-zoom {
@@ -1799,16 +1809,40 @@ function imgBatchPoll() {
   }).catch(() => { /* server restart etc. */ });
 }
 
+// Pick the input folder only; pre-fill the "保存路径" with the auto target so the user
+// can edit it (or clear to fall back to the server default).
 $('imgBatchBtn').addEventListener('click', async () => {
   if (imgBatchBusy) return;
   const pk = await fetch('/api/pick-folder').then((x) => x.json());
   if (!pk.ok) { if (!pk.cancelled) $('imgBatchInfo').textContent = '选择失败: ' + (pk.error || '?'); return; }
+  const base = pk.dir.replace(/[\\/]+$/, '');
+  const sep = pk.dir.indexOf('\\') >= 0 ? '\\' : '/';
+  const auto = base + sep + 'nr_' + base.split(/[\\\/]/).pop();
+  $('imgBatchOut').value = auto;
+  $('imgBatchStart').disabled = false;
+  $('imgBatchInfo').textContent = '已选文件夹：' + pk.dir;
+});
+
+// Start the batch using the value in the "保存路径" box (empty -> server default).
+$('imgBatchStart').addEventListener('click', async () => {
+  if (imgBatchBusy) return;
+  const v = $('imgBatchOut').value.trim();
+  if (!v) {
+    $('imgBatchInfo').textContent = '请先用「批量渲染文件夹…」选一次源文件夹';
+    return;
+  }
+  // The path is treated as a directory; if the user also wrote a name, the last segment is
+  // stripped. Empty = server default (input/nr_<basename>).
+  const segs = v.split(/[\\\/]/).filter(Boolean);
+  if (segs.length < 1) { $('imgBatchInfo').textContent = '保存路径不合法'; return; }
+  const dir = segs.slice(0, -1).join('/') || (segs[0] + ':/');
+  const body = { dir: dir, format: $('imgBatchFmt').value, cfg: buildJobCfg() };
   const r = await fetch('/api/image-batch', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ dir: pk.dir, format: $('imgBatchFmt').value, cfg: buildJobCfg() }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   }).then((x) => x.json());
-  if (!r.ok) { $('imgBatchInfo').textContent = '批量启动失败: ' + (r.error || '?'); return; }
+  if (!r.ok) { $('imgBatchInfo').textContent = '批量启动失败：' + (r.error || '?'); return; }
   imgBatchBusy = true;
+  $('imgBatchStart').disabled = true;
   $('imgBatchBtn').disabled = true;
   $('imgBatchStop').disabled = false;
   $('imgBatchInfo').textContent = '批量开始：共 ' + r.total + ' 张 → ' + r.outDir;
