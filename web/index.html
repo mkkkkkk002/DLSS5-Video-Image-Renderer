@@ -638,17 +638,19 @@
     const m = Math.floor(t / 60), s = Math.floor(t % 60);
     return m + ':' + String(s).padStart(2, '0');
   };
+  // roles: a=原视频, b=渲染后. applyLayout decides which ELEMENT holds which role (swap flips
+  // it), so all timing code goes through the dynamic master/slave pair instead of hard-coded
+  // element names. The slave (原视频) is offset by the render start so a window render still
+  // lines up with the FULL source: orig_time = render_time + start.
+  let roleA = null, roleB = null, flipped = false, offsetS = 0;
+  let vM = vA, vO = vB;          // vM = rendered master, vO = original slave (+start offset)
   const onReady = (side) => { ready[side] = true; if (ready.a && ready.b && !inited) {
       inited = true;
       zoomB.disabled = false;
+      alignFromMaster();                        // park slave at start+offset before any play
       if (autoNext) { autoTries = 0; autoPlay(); }   // auto-imported after a render -> start playing
-
       ctrl.hidden = false;
-      
-      syncTo(vB.currentTime || 0);
     } };
-
-  let roleA = null, roleB = null, flipped = false;   // roleA/orig & roleB/rendered
   function applyLabels() {
     const leftOrig = !flipped;
     $('vdLabL').textContent = leftOrig ? '原视频' : '渲染后';
@@ -660,34 +662,38 @@
     ready = { a: false, b: false }; inited = false;
     zoomB.disabled = true;
     vB.src = vurl(topSrc); vA.src = vurl(baseSrc);
+    vM = (flipped ? vB : vA);                   // element that now plays the RENDERED clip
+    vO = (flipped ? vA : vB);                   // element that plays the ORIGINAL (slave+offset)
     // default muted on both; volume slider is the only way to unmute the rendered track
     vB.muted = true; vA.muted = true; curMuted = true; muteB.textContent = '🔇';
     applyLabels();
     box.classList.remove('empty');
     ctrl.hidden = true;
-    
     playB.textContent = '▶';
   }
-  function load(a, b, auto) {
+  function load(a, b, auto, startS) {
     if (!a || !b) return;
     if (!auto) window.__vdManual = true;
     roleA = a; roleB = b; flipped = false; autoNext = !!auto;
+    offsetS = parseFloat(startS) || 0;
     applyLayout();
   }
-  function syncTo(t) {
-    if (syncing) return;
-    syncing = true;
-    try { if (isFinite(vA.duration)) vA.currentTime = Math.min(t, vA.duration); } catch (e) { /* ignore */ }
-    try { if (isFinite(vB.duration)) vB.currentTime = Math.min(t, vB.duration); } catch (e) { /* ignore */ }
-    syncing = false;
-  }
+  const posOrig = (masterT) => {                 // where the original should be for a given master time
+    const p = (masterT || 0) + offsetS;
+    const d = vO.duration;
+    return (isFinite(d) && d > 0) ? Math.min(p, d) : p;
+  };
+  const alignFromMaster = () => {
+    if (!inited) return;
+    try { vO.currentTime = posOrig(vM.currentTime); } catch (e) { /* ignore */ }
+  };
   function renderTime() {
-    const d = vA.duration || 0, t = vA.currentTime || 0;
+    const d = vM.duration || 0, t = vM.currentTime || 0;
     timeT.textContent = fmt(t) + ' / ' + fmt(d);
     if (!dragging && d > 0) seek.value = Math.round((t / d) * 1000);
-    if (vA.ended) playB.textContent = '▶';
+    if (vM.ended) playB.textContent = '▶';
   }
-  function setPlayIcon() { playB.textContent = (vA && !vA.paused) ? '⏸' : '▶'; }
+  function setPlayIcon() { playB.textContent = (vM && !vM.paused) ? '⏸' : '▶'; }
 
   vA.addEventListener('loadedmetadata', () => onReady('a'));
   vB.addEventListener('loadedmetadata', () => onReady('b'));
@@ -700,32 +706,31 @@
   vA.addEventListener('pause', () => { setPlayIcon(); try { if (!vB.paused) vB.pause(); } catch (e) { /* ignore */ } });
   vB.addEventListener('pause', () => { try { if (!vA.paused) vA.pause(); } catch (e) { /* ignore */ } });
   let restarting = false;
-  const playBoth = () => { kick(vA); kick(vB); };
-  // NO mid-play auto realign: writing currentTime while playing is exactly what makes the
-  // picture stutter (decoder repositioning). Align only at discrete user moments: pressing
-  // play, dragging the scrubber, or the loop restart.
-  const alignOnce = () => {
-    if (!inited) return;
-    try { vB.currentTime = Math.min(vA.currentTime || 0, vB.duration || (vA.currentTime || 0)); }
-    catch (e) { /* ignore */ }
-  };
+  const playBoth = () => { kick(vM); if (vO.paused) kick(vO); };
+  // NO mid-play auto realign (it stutters the picture). Alignment only at discrete moments:
+  // play press, scrub, or loop restart -- and the original is always put at master_time + offset.
+  const alignOnce = () => alignFromMaster();
   const restartAll = () => {
     if (restarting) return;
     restarting = true;
-    try { vA.pause(); vB.pause(); } catch (e) { /* ignore */ }
-    try { vA.currentTime = 0; vB.currentTime = 0; } catch (e) { /* ignore */ }
+    try { vM.pause(); vO.pause(); } catch (e) { /* ignore */ }
+    try { vM.currentTime = 0; vO.currentTime = posOrig(0); } catch (e) { /* ignore */ }
     setTimeout(() => { restarting = false; }, 150);
     playBoth();
   };
   const maybeRestart = () => {
-    const d = vA.duration;
-    if (!restarting && inited && d > 0 && vA.currentTime >= d - 0.08) restartAll();
+    const d = vM.duration;
+    if (!restarting && inited && d > 0 && vM.currentTime >= d - 0.08) restartAll();
   };
-  vA.addEventListener('play', () => { setPlayIcon(); try { if (vB.paused) vB.play().catch(() => { }); } catch (e) { /* ignore */ } });
-  vB.addEventListener('play', () => { /* master decides */ });
-  vA.addEventListener('timeupdate', () => { renderTime(); maybeRestart(); });
-  vA.addEventListener('ended', restartAll);
-  vB.addEventListener('ended', () => { if (!restarting && vB.duration && vA.currentTime >= vB.duration - 0.05) restartAll(); });
+  const onTick = (el) => { if (el !== vM) return; renderTime(); maybeRestart(); };
+  vA.addEventListener('timeupdate', () => onTick(vA));
+  vB.addEventListener('timeupdate', () => onTick(vB));
+  vA.addEventListener('play', () => { setPlayIcon(); try { if (vA === vM && vO.paused) vO.play().catch(() => { }); } catch (e) { /* ignore */ } });
+  vB.addEventListener('play', () => { try { if (vB === vM && vO.paused) vO.play().catch(() => { }); } catch (e) { /* ignore */ } });
+  vA.addEventListener('ended', () => { if (vA === vM) restartAll(); });
+  vB.addEventListener('ended', () => { if (vB === vM) restartAll(); });
+  // original (slave) hitting its own tail = the compare window ended -> replay together
+  vO.addEventListener('ended', () => { if (!restarting) restartAll(); });
 
   playB.addEventListener('click', async () => {
     if (!vA.src) return;
@@ -740,8 +745,10 @@
   seek.addEventListener('input', () => {
     if (!inited) return;
     dragging = true;
-    const d = vA.duration || 0;
-    syncTo((seek.value / 1000) * d);
+    const d = vM.duration || 0;
+    const t = (seek.value / 1000) * d;
+    try { vM.currentTime = Math.min(t, d); } catch (e) { /* ignore */ }
+    try { vO.currentTime = posOrig(t); } catch (e) { /* ignore */ }
     renderTime();
   });
   seek.addEventListener('change', () => { dragging = false; });
@@ -799,13 +806,14 @@
 
   window.vdCompare = {
     load: load,
-    autoload: (a, b) => {
+    autoload: (a, b, startS) => {
       // A freshly finished render always wins: import the new pair (and autoplay), even if the
-      // user had manually picked videos earlier.
+      // user had manually picked videos earlier. startS = render window start (0 = full clip),
+      // used to keep the FULL original aligned with a windowed render (orig_time = t + startS).
       if (!window.__vdAutoDone) {
         window.__vdAutoDone = true;
         window.__vdManual = false;
-        load(a, b, true);
+        load(a, b, true, startS);
       }
     },
   };
@@ -1131,7 +1139,7 @@ function renderStatus(s) {
         showExportMsg('渲染完成，视频已保存至：' + s.output, false);
       }
       if (window.vdCompare && window.__vdOrig && s.output) {
-        window.vdCompare.autoload(window.__vdOrig, s.output);
+        window.vdCompare.autoload(window.__vdOrig, s.output, window.__vdStart || 0);
       }
       showStats(totalF > 0
         ? `共 ${totalF} 帧 · 平均 ${fps.toFixed(1)} 帧/秒 · 用时 ${fmtDur(s.elapsedSec)}`
@@ -1235,8 +1243,9 @@ $('startBtn').addEventListener('click', async () => {
   }).then((x) => x.json());
 
   if (r.ok && r.output) {
-    // remember the pair for the video side-by-side compare module
+    // remember the pair (and the render start) for the video compare module
     window.__vdOrig = input;
+    window.__vdStart = st;
     window.__vdAutoDone = false;
   }
 
