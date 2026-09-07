@@ -964,20 +964,24 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: false, error: 'job not in queue (running jobs need 停止)' });
     }
 
-    // Reorder the pending queue (drag & drop sends the full new id order).
+    // Reorder the pending queue (drag & drop sends the desired order). TOLERANT: the client
+    // snapshot may already be stale (a job can start / finish while the user drags), so we only
+    // apply the relative order to ids that are STILL queued; everything else is ignored instead
+    // of failing the whole request (which made the row snap back after a successful-looking drop).
     if (url.pathname === '/api/queue-order' && req.method === 'POST') {
         const body = await readBody(req);
         const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
-        const have = jobQueue.map((j) => String(j.id));
-        const okSet = ids.length === have.length &&
-            new Set(ids).size === ids.length &&
-            ids.every((x) => have.includes(x));
-        if (!okSet) {
-            return sendJson(res, 400, { ok: false, error: 'invalid order (must be a permutation of the queued ids)' });
+        const queued = jobQueue.map((j) => String(j.id));
+        // Listed (still queued) ids follow the dropped order; any queued id the client missed
+        // (because a job started meanwhile) keeps its old relative position at the tail.
+        const listed = ids.filter((x) => queued.includes(x));
+        const rest = queued.filter((x) => !listed.includes(x));
+        const ordered = listed.concat(rest);
+        if (ordered.length > 0) {
+            const byId = new Map(jobQueue.map((j) => [String(j.id), j]));
+            jobQueue.length = 0;
+            ordered.forEach((x) => jobQueue.push(byId.get(x)));
         }
-        const byId = new Map(jobQueue.map((j) => [String(j.id), j]));
-        jobQueue.length = 0;
-        ids.forEach((x) => jobQueue.push(byId.get(x)));
         return sendJson(res, 200, { ok: true, queue: queueInfo() });
     }
 
