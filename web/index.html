@@ -465,7 +465,6 @@
             <div class="btn-row" style="margin-top:4px;">
         <button class="btn primary" id="startBtn">开始处理</button>
         <button class="btn danger" id="cancelBtn" disabled>停止当前任务</button>
-        <button class="btn danger" id="exitBtn">退出</button>
       </div>
       <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
       <h3 style="font-size:13px; font-weight:600; color:var(--dim); margin:0 0 6px 0;">渲染进度</h3>
@@ -477,6 +476,9 @@
       <div class="status done" id="exportMsg" style="margin-top:6px; display:none;"></div>
       <h3 style="font-size:13px; font-weight:600; color:var(--dim); margin:8px 0 4px 0;">渲染队列</h3>
       <div id="queueBox" style="display:none; font-size:12px; line-height:1.6;"></div>
+      <div style="display:flex; justify-content:center; margin-top:14px;">
+        <button class="exit-power" id="exitBtn" title="点击即可清除缓存，正常退出程序">⏻</button>
+      </div>
     </div>
   </div>
 
@@ -615,6 +617,14 @@
 // ----------------------------------------------------------------- video side-by-side compare
 (function () {
   const $ = (id) => document.getElementById(id);
+(function () {
+  document.querySelectorAll('input, textarea').forEach((el) => {
+    el.setAttribute('autocomplete', 'off');
+    el.setAttribute('autocorrect', 'off');
+    el.setAttribute('autocapitalize', 'off');
+    el.setAttribute('spellcheck', 'false');
+  });
+})();
   const vB = $('vdBefore'), vA = $('vdAfter');       // vB = rendered-before (top-left), vA = after (base)
   const box = $('vdBox'), stage = $('vdStage'), topL = $('vdTop'), div = $('vdDivider');
   const playB = $('vdPlay'), seek = $('vdSeek'), timeT = $('vdTime');
@@ -834,6 +844,28 @@
 })();
 </script>
 
+
+<!-- power-style exit button -->
+<style>
+.exit-power {
+  width: 72px; height: 72px; border-radius: 50%;
+  font-size: 34px; line-height: 1;
+  color: #fff; background: radial-gradient(circle at 50% 35%, #a33038, #6e1219);
+  border: 3px solid #ff5d5d;
+  box-shadow: 0 0 0 4px rgba(255,93,93,.18), 0 6px 18px rgba(0,0,0,.45);
+  cursor: pointer;
+  transition: transform .12s ease, box-shadow .12s ease, filter .12s ease;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.exit-power:hover {
+  transform: scale(1.12);
+  filter: brightness(1.15);
+  box-shadow: 0 0 26px rgba(255,80,80,.55), 0 6px 22px rgba(0,0,0,.5);
+}
+.exit-power:active { transform: scale(.96); }
+.exit-power:disabled { opacity: .45; cursor: default; }
+</style>
+
 <!-- Floating log panel (bottom-right). Default folded; click the header to expand. -->
 <div id="logPanel" class="log-panel folded" aria-live="polite">
   <div class="log-head" id="logHead">
@@ -850,6 +882,14 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+(function () {
+  document.querySelectorAll('input, textarea').forEach((el) => {
+    el.setAttribute('autocomplete', 'off');
+    el.setAttribute('autocorrect', 'off');
+    el.setAttribute('autocapitalize', 'off');
+    el.setAttribute('spellcheck', 'false');
+  });
+})();
 
 // Project root + default outputs dir, populated by GET /api/info on boot. Cached so autoFillOutput
 // and the output picker can build <ROOT>/outputs/nr_<stem>.<ext> without an extra round-trip.
@@ -1168,8 +1208,8 @@ function updateQueueBox(q) {
     '<div style="display:flex; gap:4px; align-items:center; padding:2px 0; border-top:1px solid var(--line);">' +
     '<button class="btn" style="padding:0 6px; font-size:11px;" data-id="' + it.id + '" data-a="up" ' + (first ? 'disabled' : '') + '>▲</button>' +
     '<button class="btn" style="padding:0 6px; font-size:11px;" data-id="' + it.id + '" data-a="dn" ' + (last ? 'disabled' : '') + '>▼</button>' +
-    '<button class="btn" style="padding:0 6px; font-size:11px;" data-id="' + it.id + '" data-a="del">✕</button>' +
-    '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + escHtml(it.out) + '">' + escHtml(it.label) + '</span></div>';
+    '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + escHtml(it.out) + '">' + escHtml(it.label) + '</span>' +
+    '<button class="btn" style="padding:0 6px; font-size:11px;" data-id="' + it.id + '" data-a="del">✕</button></div>';
   box.innerHTML = items.map((it, k) => act(it, k === 0, k === items.length - 1)).join('');
   box.querySelectorAll('button[data-a]').forEach((b) => {
     b.addEventListener('click', async () => {
