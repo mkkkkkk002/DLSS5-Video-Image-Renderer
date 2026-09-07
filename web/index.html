@@ -168,9 +168,10 @@
   }
   .img-modal .compare .img-stage > img.orig,
   .img-modal .compare .render-layer img {
-    width: 100%; height: 100%; object-fit: fill;
-    /* MUST neutralise the base rules (max-width:100% / max-height:70vh) or the two layers end
-       up with different sizes and the split never lines up. */
+    width: 100%; height: 100%; object-fit: cover;
+    /* cover keeps aspect (no squash for portrait shots) while both layers share the same box,
+       so the split stays pixel-aligned. MUST also neutralise the base rules (max-width:100% /
+       max-height:70vh) or the two layers would differ in size and never line up. */
     max-width: none; max-height: none;
   }
 
