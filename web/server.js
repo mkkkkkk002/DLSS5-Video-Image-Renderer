@@ -267,6 +267,7 @@ function runFileDialog(scriptBody, valueExpr) {
 
 let current = null;   // { id, child, done, total, lines, finished, code }  (ACTIVE job only)
 const jobQueue = [];   // jobs waiting behind the active one (each carries its own cfg snapshot)
+let lastDone = null;   // { id, input, start, output, code } of the most recently finished job
 let nextId = 1;
 
 const MIME = {
@@ -594,6 +595,14 @@ function startJob(cfg) {
 
 function jobFinish(job, cancelled) {
     cleanupTemps(job);
+    lastDone = {
+        id: job.id,
+        input: (job.cfg && job.cfg.input) || null,
+        start: parseFloat((job.cfg && job.cfg.startTime)) || 0,
+        output: job.output || null,
+        code: cancelled ? null : 0,
+        at: Date.now(),
+    };
     if (cancelled) {
         job.lines.push('cancelled by user');
         job.cancelled = true;
@@ -763,7 +772,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/status' && req.method === 'GET') {
         uiLastPoll = Date.now();
         const j = current;
-        if (!j) return sendJson(res, 200, { running: false, lines: [], lineCount: 0, queue: queueInfo() });
+        if (!j) return sendJson(res, 200, { running: false, lines: [], lineCount: 0, queue: queueInfo(), lastDone });
         let outputSize = null;
         if (j.output && fs.existsSync(j.output)) {
             try { outputSize = fs.statSync(j.output).size; } catch (e) {}
@@ -820,6 +829,7 @@ const server = http.createServer(async (req, res) => {
             lines: j.lines.slice(since),
             lineCount,
             queue: queueInfo(),
+            lastDone,
         });
     }
 

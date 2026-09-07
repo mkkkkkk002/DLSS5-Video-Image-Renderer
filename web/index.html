@@ -822,14 +822,11 @@
   window.vdCompare = {
     load: load,
     autoload: (a, b, startS) => {
-      // A freshly finished render always wins: import the new pair (and autoplay), even if the
-      // user had manually picked videos earlier. startS = render window start (0 = full clip),
-      // used to keep the FULL original aligned with a windowed render (orig_time = t + startS).
-      if (!window.__vdAutoDone) {
-        window.__vdAutoDone = true;
-        window.__vdManual = false;
-        load(a, b, true, startS);
-      }
+      // A freshly finished render always wins (also for later jobs in the queue): import the new
+      // pair and autoplay. startS = render window start (0 = full clip), used to keep the FULL
+      // original aligned with a windowed render (orig_time = t + startS).
+      window.__vdManual = false;
+      load(a, b, true, startS);
     },
   };
 })();
@@ -1176,6 +1173,16 @@ function updateQueueBox(q) {
 function renderStatus(s) {
   updateQueueBox(s.queue);
   $('cancelBtn').disabled = !s.running;
+  // Import each finished (queue) job into the video compare as it completes. lastDone.id lets us
+  // dedupe; the very first poll after a page load only records it (no surprise re-import of old
+  // results), afterwards every new finished job auto-loads its own pair + window start.
+  if (window.__vdSeenDone === undefined) {
+    window.__vdSeenDone = (s.lastDone && s.lastDone.id) || null;
+  } else if (window.vdCompare && s.lastDone && s.lastDone.code === 0 &&
+             s.lastDone.id !== window.__vdSeenDone && s.lastDone.input && s.lastDone.output) {
+    window.__vdSeenDone = s.lastDone.id;
+    window.vdCompare.autoload(s.lastDone.input, s.lastDone.output, s.lastDone.start || 0);
+  }
   const doneF = s.overallDone || 0, totalF = s.overallTotal || 0;
   const pct = totalF > 0 ? Math.min(100, (doneF / totalF) * 100) : 0;
   $('bar').style.width = pct + '%';
@@ -1195,9 +1202,7 @@ function renderStatus(s) {
       if (s.output) {
         showExportMsg('渲染完成，视频已保存至：' + s.output, false);
       }
-      if (window.vdCompare && window.__vdOrig && s.output) {
-        window.vdCompare.autoload(window.__vdOrig, s.output, window.__vdStart || 0);
-      }
+
       showStats(totalF > 0
         ? `共 ${totalF} 帧 · 平均 ${fps.toFixed(1)} 帧/秒 · 用时 ${fmtDur(s.elapsedSec)}`
         : '');
