@@ -27,16 +27,47 @@ void D3D12Ctx::setError(const char* msg) {
 static int g_wantIdx = -1;
 void d3dSetAdapter(int index) { g_wantIdx = index; }
 
+// Count outputs physically attached to this adapter (virtual-display clones report 0).
+static UINT countOutputs(IDXGIAdapter1* a) {
+    UINT nOut = 0;
+    for (;;) {
+        IDXGIOutput* op = nullptr;
+        if (a->EnumOutputs(nOut, &op) != S_OK) break;
+        op->Release();
+        ++nOut;
+    }
+    return nOut;
+}
+
 static void collectAdapters(std::vector<ComPtr<IDXGIAdapter1>>& out) {
     ComPtr<IDXGIFactory4> factory;
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return;
+
+    struct Entry { ComPtr<IDXGIAdapter1> a; DXGI_ADAPTER_DESC1 d; UINT outs; };
+    std::vector<Entry> all;
     for (UINT i = 0; ; ++i) {
         ComPtr<IDXGIAdapter1> a;
         if (factory->EnumAdapters1(i, &a) == DXGI_ERROR_NOT_FOUND) break;
         DXGI_ADAPTER_DESC1 d;
         a->GetDesc1(&d);
         if (d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;   // Microsoft Basic Render
-        out.push_back(a);
+        all.push_back({ a, d, countOutputs(a.Get()) });
+    }
+
+    // Drop virtual-display clones: streaming/remote tools enumerate extra adapters that report
+    // the SAME vendor/device/vram as the real GPU but have no outputs of their own. Rule:
+    // within a (vendor,device) group, keep only members that have >=1 output when such a member
+    // exists. Groups where every member has 0 outputs (e.g. a headless render card, or an
+    // Optimus dGPU that renders but drives no display) are kept untouched so we never hide a
+    // card that could still render. A genuine distinct GPU has its own vendor/device id and is
+    // therefore unaffected by this rule.
+    for (size_t i = 0; i < all.size(); ++i) {
+        const auto& e = all[i];
+        bool hasOutputted = false;
+        for (const auto& o : all)
+            if (o.d.VendorId == e.d.VendorId && o.d.DeviceId == e.d.DeviceId && o.outs > 0) { hasOutputted = true; break; }
+        if (e.outs == 0 && hasOutputted) continue;   // duplicate clone of a real outputted GPU
+        out.push_back(e.a);
     }
 }
 
@@ -75,7 +106,7 @@ static IDXGIAdapter1* pickBestAdapter() {
             if (score > bestScore) { bestScore = score; chosen = i; }
         }
     }
-    printf("[d3d12] using adapter %u:/n", chosen);
+    printf("[d3d12] using adapter %u:\n", chosen);
     printAdapter(chosen, list[chosen].Get());
     return list[chosen].Detach();
 }
