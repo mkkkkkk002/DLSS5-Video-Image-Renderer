@@ -941,6 +941,19 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, startJob(body));
     }
 
+    if (url.pathname === '/api/queue-order' && req.method === 'POST') {
+        const body = await readBody(req);
+        const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+        const cur = jobQueue.map((j) => String(j.id));
+        const same = ids.length === cur.length &&
+            ids.every((x) => cur.includes(x)) && cur.every((x) => ids.includes(x));
+        if (same) {
+            jobQueue.sort((a, b) => ids.indexOf(String(a.id)) - ids.indexOf(String(b.id)));
+            return sendJson(res, 200, { ok: true, queue: queueInfo() });
+        }
+        return sendJson(res, 200, { ok: false, error: 'id 列表与当前队列不一致' });
+    }
+
     if (url.pathname === '/api/queue-remove' && req.method === 'POST') {
         const body = await readBody(req);
         const idx = jobQueue.findIndex((j) => String(j.id) === String(body.id));

@@ -464,7 +464,7 @@
       <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
             <div class="btn-row" style="margin-top:4px;">
         <button class="btn primary" id="startBtn">开始处理</button>
-        <button class="btn danger" id="cancelBtn" disabled>停止</button>
+        <button class="btn danger" id="cancelBtn" disabled>停止当前任务</button>
       </div>
       <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
       <h3 style="font-size:13px; font-weight:600; color:var(--dim); margin:0 0 6px 0;">渲染进度</h3>
@@ -1151,27 +1151,48 @@ function escHtml(t) {
   })[c]);
 }
 // Renders the pending render queue from /api/status -> queue.
+let queueSnapshot = [];
 function updateQueueBox(q) {
   const box = $('queueBox');
   if (!box) return;
-  const items = (q && q.items) || [];
+  queueSnapshot = ((q && q.items) || []).slice();
+  const items = queueSnapshot;
   if (!items.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
   box.style.display = '';
   box.innerHTML = items.map((it) =>
-    '<div style="display:flex; gap:6px; align-items:center; padding:3px 0; border-top:1px solid var(--line);">' +
-    '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + escHtml(it.out) + '">#' + it.id + ' ' + escHtml(it.label) + '</span>' +
-    (it.encoder ? '<span style="color:var(--dim);">' + escHtml(it.encoder) + '</span>' : '') +
-    '<button class="btn" style="padding:0 8px; font-size:12px;" data-id="' + it.id + '">✕</button></div>'
+    '<div draggable="true" data-id="' + it.id + '" ' +
+    'style="display:flex; gap:8px; align-items:center; padding:4px 2px; border-top:1px solid var(--line); cursor:grab; user-select:none;">' +
+    '<span style="color:var(--dim);">⠿</span>' +
+    '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + escHtml(it.out) + '">' + escHtml(it.label) + '</span>' +
+    '<button class="btn" style="padding:0 8px; font-size:12px;">✕</button></div>'
   ).join('');
-  box.querySelectorAll('button[data-id]').forEach((b) => {
-    b.addEventListener('click', async () => {
-      await fetch('/api/queue-remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: b.dataset.id }) });
+  box.querySelectorAll('div[draggable]').forEach((row) => {
+    const id = row.dataset.id;
+    row.addEventListener('dragstart', (e) => { window.__qDrag = id; row.style.opacity = '.4'; e.dataTransfer.effectAllowed = 'move'; });
+    row.addEventListener('dragend', () => { row.style.opacity = ''; window.__qDrag = null; });
+    row.addEventListener('dragover', (e) => { e.preventDefault(); row.style.background = 'rgba(255,255,255,.06)'; });
+    row.addEventListener('dragleave', () => { row.style.background = ''; });
+    row.addEventListener('drop', async (e) => {
+      e.preventDefault(); row.style.background = '';
+      const from = window.__qDrag; const to = id;
+      if (!from || from === to) return;
+      const ids = queueSnapshot.map((x) => x.id);
+      const fi = ids.indexOf(from), ti = ids.indexOf(to);
+      if (fi < 0 || ti < 0) return;
+      ids.splice(fi, 1);
+      ids.splice(ti, 0, from);
+      await fetch('/api/queue-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+      poll();
+    });
+    row.querySelector('button').addEventListener('click', async () => {
+      await fetch('/api/queue-remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
       poll();
     });
   });
 }
 function renderStatus(s) {
   updateQueueBox(s.queue);
+  $('startBtn').textContent = s.running ? '加入队列' : '开始处理';
   $('cancelBtn').disabled = !s.running;
   // Import each finished (queue) job into the video compare as it completes. lastDone.id lets us
   // dedupe; the very first poll after a page load only records it (no surprise re-import of old
