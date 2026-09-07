@@ -28,7 +28,8 @@ DLSS5 Video & Image Renderer
 > 下载解压即可用，无需安装/改名。详见下文「快速开始」。
 
 ---
-<img width="1550" height="1251" alt="图片" src="https://github.com/user-attachments/assets/ca56661e-b6a4-4841-9d1b-c0facf0f7d42" />
+![Uploading 图片.png…]()
+
 
 ## 快速开始
 
