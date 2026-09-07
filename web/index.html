@@ -1161,16 +1161,23 @@ function updateQueueBox(q) {
   if (!items.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
   box.style.display = '';
   const key = items.map((x) => x.id).join('|');
-  if (key === (box.dataset.key || '')) return;   // fixed FIFO; skip pointless re-renders
+  if (key === (box.dataset.key || '')) return;   // fixed FIFO + ▲/▼ reorder; skip pointless rebuilds
   box.dataset.key = key;
-  box.innerHTML = items.map((it) =>
-    '<div style="display:flex; gap:8px; align-items:center; padding:3px 0; border-top:1px solid var(--line);">' +
+  const act = (it, first, last) =>
+    '<div style="display:flex; gap:4px; align-items:center; padding:2px 0; border-top:1px solid var(--line);">' +
     '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + escHtml(it.out) + '">' + escHtml(it.label) + '</span>' +
-    '<button class="btn" style="padding:0 8px; font-size:12px;" data-id="' + it.id + '">✕</button></div>'
-  ).join('');
-  box.querySelectorAll('button[data-id]').forEach((b) => {
+    '<button class="btn" style="padding:0 6px; font-size:11px;" data-id="' + it.id + '" data-a="up" ' + (first ? 'disabled' : '') + '>▲</button>' +
+    '<button class="btn" style="padding:0 6px; font-size:11px;" data-id="' + it.id + '" data-a="dn" ' + (last ? 'disabled' : '') + '>▼</button>' +
+    '<button class="btn" style="padding:0 6px; font-size:11px;" data-id="' + it.id + '" data-a="del">✕</button></div>';
+  box.innerHTML = items.map((it, k) => act(it, k === 0, k === items.length - 1)).join('');
+  box.querySelectorAll('button[data-a]').forEach((b) => {
     b.addEventListener('click', async () => {
-      await fetch('/api/queue-remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: b.dataset.id }) });
+      const id = b.dataset.id, a = b.dataset.a;
+      const p = a === 'del'
+        ? '/api/queue-remove'
+        : '/api/queue-move';
+      const body = a === 'del' ? { id } : { id, dir: a };
+      await fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       poll();
     });
   });

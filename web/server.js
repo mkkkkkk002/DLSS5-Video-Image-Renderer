@@ -964,6 +964,19 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: false, error: 'job not in queue (running jobs need 停止)' });
     }
 
+    // Move ONE queued job one step up/down (fixed queue + per-row ▲/▼ reorder).
+    if (url.pathname === '/api/queue-move' && req.method === 'POST') {
+        const body = await readBody(req);
+        const idx = jobQueue.findIndex((j) => String(j.id) === String(body.id));
+        const dir = body.dir === 'up' ? -1 : 1;
+        const to = idx + dir;
+        if (idx >= 0 && to >= 0 && to < jobQueue.length) {
+            const [j] = jobQueue.splice(idx, 1);
+            jobQueue.splice(to, 0, j);
+        }
+        return sendJson(res, 200, { ok: true, queue: queueInfo() });
+    }
+
     // Formal "exit" button: stop any running render, release every disposable cache, then end
     // the process. The guard console notices the child exit and closes too.
     if (url.pathname === '/api/exit' && req.method === 'POST') {
