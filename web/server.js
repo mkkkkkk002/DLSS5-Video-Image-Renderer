@@ -60,6 +60,13 @@ function cleanUploadsDir() {
     } catch (e) { /* ignore */ }
 }
 
+// UI liveness: the page polls /api/status every ~500ms while open. When that stops (browser
+// tab/window closed) and no render job is running, the disposable frame cache is swept after a
+// short grace period -- so closing just the BROWSER also cleans up, not only closing the guard
+// console. The guard console close still does the authoritative recursive sweep.
+let uiLastPoll = Date.now();
+const uiIdleGraceMs = 60000;
+
 function cleanFrameDir() {
     try {
         for (const f of fs.readdirSync(FRAME_DIR)) {
@@ -717,6 +724,7 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
 
     if (url.pathname === '/api/status' && req.method === 'GET') {
+        uiLastPoll = Date.now();
         const j = current;
         if (!j) return sendJson(res, 200, { running: false, lines: [], lineCount: 0 });
         let outputSize = null;
@@ -1381,4 +1389,13 @@ server.listen(PORT, '127.0.0.1', () => {
     if (process.argv.includes('--open')) {
         setTimeout(() => openBrowser(url), 500);
     }
+    // Idle sweep: page gone (no polls) + no running/fresh job -> drop the disposable frame cache.
+    setInterval(() => {
+        const idleMs = Date.now() - uiLastPoll;
+        const jobBusy = current && !current.finished;
+        const jobFresh = current && (Date.now() - (current.t1 || 0)) < 30000;
+        if (!jobBusy && !jobFresh && idleMs > uiIdleGraceMs) {
+            cleanFrameDir();
+        }
+    }, 15000);
 });
