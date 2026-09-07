@@ -1,5 +1,3 @@
-<img width="1699" height="1220" alt="图片" src="https://github.com/user-attachments/assets/71e9c74a-2672-42e1-8c03-7a7add53a78d" />DLSS5 Video & Image Renderer
-
 用 NVIDIA DLSS 5 Neural Renderer（DLSS NR）神经网络对**视频与图片做逐帧画质增强**的本地工具。
 纯本地运算，不上传任何数据；浏览器操作界面，无需安装。
 
