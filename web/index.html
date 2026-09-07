@@ -908,11 +908,26 @@ let inputIsTmp = false;
 // an output named after the user's real file.
 let lastOrigName = '';
 
+// Drops any previously rendered frame comparison (orig+render pair) so a NEW video/frame never
+// shows mixed with the OLD video's picture while the next render is in flight or failed.
+function resetImgCompare() {
+  imgRenderedAbs = null;
+  imgPickPath = null;
+  try { $('imgSaveBtn').disabled = true; $('imgZoomBtn').disabled = true; } catch (e) { /* ignore */ }
+  try {
+    $('imgOrigImg').src = '';
+    $('imgRenderImg').src = '';
+    $('imgBox').style.display = 'none';
+    $('imgBox').classList.add('empty');
+  } catch (e) { /* ignore */ }
+}
+
 function applyInputPath(path, name, isTmp) {
   inputIsTmp = !!isTmp;
   lastOrigName = name || '';
   $('input').value = path;
   resetRangeFromInput();
+  resetImgCompare();          // previous video's rendered frame must not leak into the new one
   loadCmpPlayer(path);
 }
 
@@ -1358,6 +1373,8 @@ $('setCmpFrameBtn').addEventListener('click', async () => {
     cv.width = v.videoWidth;
     cv.height = v.videoHeight;
     cv.getContext('2d').drawImage(v, 0, 0);
+    resetImgCompare();                      // hide the previous pair until this frame's result lands
+    status.textContent = '渲染当前帧…';
     const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
     if (!blob) throw new Error('截图失败:canvas 没有输出');
     // 2) Upload the PNG, then reuse the still-image renderer (16-bit, no NV-OF) on that exact
