@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DLSS5NR 视频渲染 v1.3</title>
+<title>DLSS5NR 视频渲染 v1.4</title>
 <style>
   :root {
     --bg: #f6f7f9;
@@ -247,6 +247,8 @@
   transform: translateX(-1px);
 }
 .compare.empty .orig { opacity: .35; }
+/* image compare: hidden until an image is actually rendered (no empty black box on load) */
+#imgBox.empty { display: none; }
 .compare.empty .divider, .compare.empty .render-layer { display: none; }
 .compare .render-layer img[src=""], .compare .render-layer img:not([src]) { visibility: hidden; }
 
@@ -457,6 +459,12 @@
           </div>
         </label>
       </div>
+      <label class="field" style="margin-top:2px; max-width:360px;">
+        <span>渲染显卡</span>
+        <select id="gpuSel" style="width:100%;" title="选择渲染显卡。多条目同名=虚拟显示驱动注册所致，任选一条均可；混合显卡笔记本请选 NVIDIA 独显">
+          <option value="-1">自动（默认）</option>
+        </select>
+      </label>
             <label class="field" style="margin-top:2px;">
         <span>保存的文件名</span>
         <input type="text" id="exportName" placeholder="留空 = 默认名（自动带 nr_ 前缀）">
@@ -477,6 +485,28 @@
       <h3 style="font-size:13px; font-weight:600; color:var(--dim); margin:8px 0 4px 0;">渲染队列</h3>
       <div id="queueBox" style="display:none; font-size:12px; line-height:1.6;"></div>
     </div>
+    <div class="card" id="videoBatchCard" style="margin-top:10px;">
+      <h2>视频批量渲染</h2>
+      <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:4px;">
+        <span class="meta" style="font-size:12px;">输入路径</span>
+        <input class="sel" id="vbSrc" type="text" placeholder="选择要渲染的源文件夹（会递归子文件夹）"
+               style="flex:1; min-width:150px; padding:2px 6px; font-size:12px; background:#ffffff; color:#111; border:1px solid #999; border-radius:4px;">
+        <button class="btn" id="vbPickSrc" style="padding:2px 8px; font-size:12px;">选择文件夹…</button>
+      </div>
+      <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:4px;">
+        <span class="meta" style="font-size:12px;">输出路径</span>
+        <input class="sel" id="vbOut" type="text"
+               placeholder="留空=源目录下nr_xx文件夹"
+               style="flex:1; min-width:150px; padding:2px 6px; font-size:12px; background:#ffffff; color:#111; border:1px solid #999; border-radius:4px;">
+        <button class="btn" id="vbPickOut" style="padding:2px 8px; font-size:12px;">选择文件夹…</button>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:4px;">
+        <button class="btn primary" id="vbStart" disabled>开始视频批处理</button>
+        <span class="meta" id="vbInfo" style="font-size:12px;"></span>
+      </div>
+
+    </div>
+
   </div>
 
   <!-- ------------------------------------------------------------ image -->
@@ -497,7 +527,7 @@
       </div>
       <img id="imgPreview" alt="原图预览"
            style="display:none; width:100%; max-height:42vh; background:#000; border-radius:8px; margin-top:10px; object-fit:contain;">
-      <div class="compare empty" id="imgBox" style="margin-top:10px;">
+      <div class="compare empty" id="imgBox" style="margin-top:10px; display:none;">
         <div class="img-stage" id="imgStage">
           <img class="orig" id="imgOrigImg" alt="原图" src="">
           <div class="render-layer" id="imgRenderLayer"><img id="imgRenderImg" alt="渲染后" src=""></div>
@@ -878,13 +908,13 @@
 <!-- power-style exit button -->
 <style>
 #exitWrap {
-  position: fixed; left: 50%; bottom: 26px;
-  transform: translateX(-50%); z-index: 700;
+  position: fixed; top: 84px; right: 18px;
+  z-index: 700;
   display: flex; justify-content: center;
 }
 .exit-power {
-  width: 96px; height: 96px; border-radius: 50%;
-  font-size: 44px; line-height: 1;
+  width: 56px; height: 56px; border-radius: 50%;
+  font-size: 26px; line-height: 1;
   color: #fff; background: radial-gradient(circle at 50% 34%, #a9353d, #5f0f15);
   border: 3px solid #b03a3a;
   box-shadow: 0 4px 14px rgba(0,0,0,.4);   /* resting: no coloured glow (灯熄灭) */
@@ -1356,6 +1386,7 @@ function buildJobCfg() {
         localStructure: parseFloat($('localStructure').value),
         skinStructure: parseFloat($('skinStructure').value),
         encoder: $('encoder').value,
+        gpuIdx: parseInt($('gpuSel').value, 10) || -1,
         preset: parseInt($('preset').value, 10),
         style: parseInt($('style').value, 10),
         autoMask: $('autoMask').checked ? 1 : 0,
@@ -1874,6 +1905,82 @@ $('imgBatchStart').addEventListener('click', async () => {
   imgBatchTimer = setInterval(imgBatchPoll, 700);
   imgBatchPoll();
 });
+
+// ---------------------------------------------------------------- video batch render
+let vbBusy = false;
+
+function vbSetStart() { $('vbStart').disabled = vbBusy || !$('vbSrc').value.trim(); }
+
+$('vbPickSrc').addEventListener('click', async () => {
+  if (vbBusy) return;
+  const pk = await fetch('/api/pick-folder').then((x) => x.json());
+  if (!pk.ok) { if (!pk.cancelled) $('vbInfo').textContent = '选择失败: ' + (pk.error || '?'); return; }
+  const base = pk.dir.replace(/[\\/]+$/, '');
+  const sep = pk.dir.indexOf('\\') >= 0 ? '\\' : '/';
+  $('vbSrc').value = pk.dir;
+  $('vbOut').value = base + sep + 'nr_' + base.split(/[\\\/]/).pop();
+  $('vbInfo').textContent = '已选输入文件夹：' + pk.dir;
+  vbSetStart();
+});
+$('vbPickOut').addEventListener('click', async () => {
+  if (vbBusy) return;
+  const pk = await fetch('/api/pick-folder').then((x) => x.json());
+  if (!pk.ok) { if (!pk.cancelled) $('vbInfo').textContent = '选择失败: ' + (pk.error || '?'); return; }
+  $('vbOut').value = pk.dir;
+  $('vbInfo').textContent = '已选输出文件夹：' + pk.dir;
+});
+$('vbSrc').addEventListener('input', vbSetStart);
+
+// Start: every video found under 输入路径 is enqueued with the CURRENT render params snapshot.
+$('vbStart').addEventListener('click', async () => {
+  if (vbBusy) return;
+  const src = $('vbSrc').value.trim();
+  if (!src) { $('vbInfo').textContent = '请先选择输入文件夹'; return; }
+  vbBusy = true;
+  $('vbStart').disabled = true;
+  const body = {
+    inputDir: src,
+    outDir: $('vbOut').value.trim(),
+    jobCfg: Object.assign({}, buildJobCfg(), { encoder: $('encoder').value }),
+  };
+  $('vbInfo').textContent = '正在扫描视频并加入队列…';
+  const r = await fetch('/api/video-batch', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }).then((x) => x.json());
+  if (!r.ok) {
+    $('vbInfo').textContent = '失败：' + (r.error || '?');
+  } else {
+    $('vbInfo').textContent = '已加入队列 ' + r.pushed + '/' + r.total + ' 个视频 → ' + r.outDir +
+      (r.failed && r.failed.length ? '（失败 ' + r.failed.length + '）' : '');
+    // Start the shared queue/progress poller: a pure batch never went through 开始处理, so the
+    // 500ms poll that renders 队列 rows + the progress bar may not be running yet.
+    if (typeof timer !== 'undefined') {
+      if (timer) clearInterval(timer);
+      timer = setInterval(poll, 500);
+    }
+    poll();
+  }
+  vbBusy = false;
+  vbSetStart();
+});
+
+// Populate the GPU selector from the engine's own enumeration.
+async function gpuLoad() {
+  const sel = $('gpuSel');
+  if (!sel) return;
+  try {
+    const r = await fetch('/api/gpus').then((x) => x.json());
+    if (r && r.gpus) {
+      for (const g of r.gpus) {
+        const o = document.createElement('option');
+        o.value = String(g.idx);
+        o.textContent = g.idx + ': ' + g.name;
+        sel.appendChild(o);
+      }
+    }
+  } catch (e) { /* engine not available yet */ }
+}
+gpuLoad();
 
 // ---------------------------------------------------------------- persist params
 // Model / render parameters are remembered across page reloads (localStorage), so reopening the

@@ -420,6 +420,8 @@ function engineArgs(cfg, input, output, useWindow, master) {
     if (!master && cfg.pixFmt) args.push('--pix-fmt', cfg.pixFmt);
     args.push('--residual-mult', String(cfg.residualMult ?? 1.0));
     args.push('--frame-guidance', String(cfg.frameGuidance ?? 3));
+    const _gi = parseInt(cfg.gpuIdx, 10);
+    if (!isNaN(_gi) && _gi >= 0) args.push('--gpu-idx', String(_gi));
     args.push('--depth-interval', String(cfg.depthInterval ?? 0));
     return args;
 }
@@ -804,6 +806,24 @@ function walkImages(dir, out) {
             if (bn.startsWith('nr_') || bn.endsWith('_nr')) continue;   // our output folders
             list = list.concat(walkImages(p, out));
         } else if (IMAGE_EXT.includes(path.extname(ent.name).toLowerCase())) {
+            list.push(p);
+        }
+    }
+    return list;
+}
+
+// Recursively collect video files under a folder (skipping our own nr_* output dirs).
+function walkVideos(dir) {
+    let list = [];
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return list; }
+    for (const ent of entries) {
+        const p = path.join(dir, ent.name);
+        if (ent.isDirectory()) {
+            const bn = ent.name.toLowerCase();
+            if (bn.startsWith('nr_') || bn.endsWith('_nr')) continue;
+            list = list.concat(walkVideos(p));
+        } else if (VIDEO_EXT.includes(path.extname(ent.name).toLowerCase())) {
             list.push(p);
         }
     }
@@ -1618,6 +1638,55 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true });
     }
 
+    // Video batch: recursively find videos under the chosen folder and push EACH one into the
+    // normal render queue with a snapshot of the current render parameters (same progress bar).
+    if (url.pathname === '/api/video-batch' && req.method === 'POST') {
+        const body = await readBody(req);
+        const inputDir = (body.inputDir || '').trim();
+        if (!fs.existsSync(inputDir) || !fs.statSync(inputDir).isDirectory()) {
+            return sendJson(res, 400, { ok: false, error: '输入文件夹不存在' });
+        }
+        const files = walkVideos(inputDir);
+        if (!files.length) return sendJson(res, 400, { ok: false, error: '该文件夹下未找到视频' });
+        const wantOut = String(body.outDir || '').trim();
+        const outDir = wantOut || path.join(inputDir, 'nr_' + path.basename(inputDir));
+        try { fs.mkdirSync(outDir, { recursive: true }); } catch (e) { /* ignore */ }
+        const baseCfg = (body.jobCfg && typeof body.jobCfg === 'object') ? body.jobCfg : {};
+        let pushed = 0;
+        const errs = [];
+        for (const file of files) {
+            const jobCfg = Object.assign({}, baseCfg, {
+                input: file,
+                output: outDir,
+                fileName: '',
+                startTime: 0,
+                endTime: 0,
+            });
+            const res = startJob(jobCfg);
+            if (res && res.ok) pushed++;
+            else errs.push(path.basename(file) + ':' + ((res && res.error) || '?'));
+        }
+        return sendJson(res, 200, { ok: true, total: files.length, pushed, outDir, failed: errs.slice(0, 6) });
+    }
+
+    // Enumerate GPUs by invoking the engine's --list-gpus; used to populate the UI selector.
+    if (url.pathname === '/api/gpus' && req.method === 'GET') {
+        const exe = findEngine();
+        if (!fs.existsSync(exe)) return sendJson(res, 200, { ok: true, gpus: [] });
+        execFile(exe, ['--list-gpus'], { windowsHide: true, encoding: 'utf8', timeout: 20000 },
+            (err, stdout) => {
+                const gpus = [];
+                if (stdout) {
+                    for (const line of stdout.split(/\r?\n/)) {
+                        const m = /^\[gpu\] (\d+): (.+?)\s*\(vendor/.exec(line);
+                        if (m) gpus.push({ idx: parseInt(m[1], 10), name: m[2].trim() });
+                    }
+                }
+                sendJson(res, 200, { ok: true, gpus });
+            });
+        return;
+    }
+
     if (url.pathname === '/api/save-image' && req.method === 'GET') {
         const src = url.searchParams.get('src') || '';
         if (!isFramePath(src) || !fs.existsSync(src)) {
@@ -1681,7 +1750,7 @@ function bindServer(port) {
     });
     server.listen(port, '127.0.0.1', () => {
         const url = 'http://127.0.0.1:' + port + '/';
-        console.log('DLSS5NR 视频渲染服务 v1.3 已启动 — Web 界面: ' + url);
+        console.log('DLSS5NR 视频渲染服务 v1.4 已启动 — Web 界面: ' + url);
         fs.mkdirSync(OUTPUTS_DIR, { recursive: true });
         cleanUploadsDir();   // fallback only: normal shutdown cleanup is done by server_guard.exe
         cleanFrameDir();     // fallback only: normal shutdown cleanup is done by server_guard.exe
