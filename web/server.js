@@ -1301,10 +1301,18 @@ const server = http.createServer(async (req, res) => {
         let renderedPath = rendered16;
 
         try {
+            // 0) Snapshot the input into a PRIVATE copy before anything else runs. Consecutive
+            //    frame previews upload under the same temp name, so a later preview (or the
+            //    uploads purge) can delete/overwrite this file while the engine is still reading
+            //    it -- that produced stale frames and "src_*.mp4: No such file" failures.
+            const safeImg = path.join(FRAME_DIR, `safeimg_${ts}${path.extname(input).toLowerCase() || '.png'}`);
+            await new Promise((ok, bad) =>
+                fs.copyFile(input, safeImg, (e) => (e ? bad(new Error('复制输入失败: ' + e.message)) : ok())));
+
             // 1) Loop the still into a 3-frame lossless clip. x264 -qp 0 (lossless) + 4:4:4 keeps
             //    the pixels intact through the encode so the rendered frame truly is the image's.
             await runFfmpeg([
-                '-loop', '1', '-framerate', '30', '-i', input,
+                '-loop', '1', '-framerate', '30', '-i', safeImg,
                 '-frames:v', '3',
                 '-pix_fmt', 'yuv444p',
                 '-c:v', 'libx264', '-qp', '0', '-preset', 'ultrafast',
@@ -1361,7 +1369,7 @@ const server = http.createServer(async (req, res) => {
 
             return sendJson(res, 200, {
                 ok: true,
-                orig: '/api/image?path=' + encodeURIComponent(input),
+                orig: '/api/image?path=' + encodeURIComponent(safeImg),
                 render: '/api/frame-img?path=' + encodeURIComponent(renderedPath),
                 renderedAbs: renderedPath,
                 width: dim.width,
