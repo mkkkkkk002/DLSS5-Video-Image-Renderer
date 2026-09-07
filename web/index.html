@@ -701,19 +701,11 @@
   vB.addEventListener('pause', () => { try { if (!vA.paused) vA.pause(); } catch (e) { /* ignore */ } });
   let restarting = false;
   const playBoth = () => { kick(vA); kick(vB); };
-  // master/slave sync: master = rendered (vA), slave = original (vB).
-  // Correct large drift only (>0.12s ~ 3 frames) so the picture doesn't jump constantly;
-  // start-of-play and seeks always force a hard align.
-  let lastAlign = 0;
-  const syncSlave = (force) => {
+  // NO mid-play auto realign: writing currentTime while playing is exactly what makes the
+  // picture stutter (decoder repositioning). Align only at discrete user moments: pressing
+  // play, dragging the scrubber, or the loop restart.
+  const alignOnce = () => {
     if (!inited) return;
-    const now = Date.now();
-    const dt = Math.abs(vB.currentTime - vA.currentTime);
-    // Frequent seeking is what makes the slave video stutter/drop frames (decode restarts on
-    // every jump). While playing, only correct when really far (>0.3s) and at most once per 2.5s;
-    // user actions (play / drag / restart) always force a hard align.
-    if (!force && (dt <= 0.3 || now - lastAlign < 2500)) return;
-    lastAlign = now;
     try { vB.currentTime = Math.min(vA.currentTime || 0, vB.duration || (vA.currentTime || 0)); }
     catch (e) { /* ignore */ }
   };
@@ -723,41 +715,22 @@
     try { vA.pause(); vB.pause(); } catch (e) { /* ignore */ }
     try { vA.currentTime = 0; vB.currentTime = 0; } catch (e) { /* ignore */ }
     setTimeout(() => { restarting = false; }, 150);
-    playBoth();                                 // both rewind together, muted => allowed
+    playBoth();
   };
   const maybeRestart = () => {
     const d = vA.duration;
     if (!restarting && inited && d > 0 && vA.currentTime >= d - 0.08) restartAll();
   };
-  vA.addEventListener('play', () => { setPlayIcon(); syncSlave(true); try { if (vB.paused) vB.play().catch(() => { }); } catch (e) { /* ignore */ } });
+  vA.addEventListener('play', () => { setPlayIcon(); try { if (vB.paused) vB.play().catch(() => { }); } catch (e) { /* ignore */ } });
   vB.addEventListener('play', () => { /* master decides */ });
-  vA.addEventListener('timeupdate', () => { renderTime(); maybeRestart(); syncSlave(false); });
-  vA.addEventListener('seeked', () => syncSlave(true));
-  vB.addEventListener('seeked', () => syncSlave(true));
+  vA.addEventListener('timeupdate', () => { renderTime(); maybeRestart(); });
   vA.addEventListener('ended', restartAll);
   vB.addEventListener('ended', () => { if (!restarting && vB.duration && vA.currentTime >= vB.duration - 0.05) restartAll(); });
-
-  // ---- diagnostics (temporary): every 5s while playing, log dropped/decoded frame deltas of
-  // both streams + the time gap, so the "one side stutters" report can be rooted in data.
-  let prevQ = { a: 0, b: 0, da: 0, db: 0, t: 0 };
-  setInterval(() => {
-    if (!vA.src || (vA.paused && vB.paused)) return;
-    let qa = null, qb = null;
-    try { qa = vA.getVideoPlaybackQuality ? vA.getVideoPlaybackQuality() : null; } catch (e) { /* ignore */ }
-    try { qb = vB.getVideoPlaybackQuality ? vB.getVideoPlaybackQuality() : null; } catch (e) { /* ignore */ }
-    const totA = qa ? qa.totalVideoFrames : 0, totB = qb ? qb.totalVideoFrames : 0;
-    const droA = qa ? qa.droppedVideoFrames : 0, droB = qb ? qb.droppedVideoFrames : 0;
-    const tA = vA.currentTime || 0, tB = vB.currentTime || 0;
-    console.info('[vd-sync] dt=' + (tA - tB).toFixed(3) +
-      's | master(A/渲染后) t=' + tA.toFixed(2) + ' drop+' + (droA - prevQ.da) + ' tot+' + (totA - prevQ.a) +
-      ' | slave(B/原视频) t=' + tB.toFixed(2) + ' drop+' + (droB - prevQ.db) + ' tot+' + (totB - prevQ.b) +
-      ' | playing A=' + (!vA.paused) + ' B=' + (!vB.paused));
-    prevQ = { a: totA, b: totB, da: droA, db: droB };
-  }, 5000);
 
   playB.addEventListener('click', async () => {
     if (!vA.src) return;
     if (vA.paused) {
+      alignOnce();
       playB.textContent = '…';
       try { await vA.play(); } catch (e) { /* ignore */ }
       try { if (vB.paused) await vB.play(); } catch (e) { /* ignore */ }
