@@ -489,6 +489,15 @@
         <button class="btn" id="imgZoomBtn" disabled title="打开全屏对比,鼠标拖动分隔条仔细看渲染差异">放大对比</button>
         <button class="btn" id="imgSaveBtn" disabled>保存渲染结果…</button>
       </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:4px;">
+        <button class="btn" id="imgBatchBtn">批量渲染文件夹…</button>
+        <select id="imgBatchFmt" style="padding:4px 8px; border-radius:4px; background:#222; color:#eee; border:1px solid #444;">
+          <option value="png">PNG</option>
+          <option value="jpg">JPG</option>
+        </select>
+        <button class="btn danger" id="imgBatchStop" disabled>停止</button>
+        <span class="meta" id="imgBatchInfo"></span>
+      </div>
       <div class="meta" id="imgStatus" style="margin-top:6px;"></div>
       <div class="img-drop" id="imgDropZone"
            title="把图片文件拖到页面任意处,或用截图工具复制后在页面内按 Ctrl+V">
@@ -1752,6 +1761,63 @@ $('imgSaveBtn').addEventListener('click', async () => {
   } catch (e) {
     $('imgStatus').textContent = '保存失败: ' + e.message;
   }
+});
+
+// ---------------------------------------------------------------- batch image render
+let imgBatchCur = {};
+let imgBatchTimer = null;
+let imgBatchBusy = false;
+
+function imgBatchRender() {
+  $('imgBatchInfo').textContent = '第 ' + imgBatchCur.idx + '/' + imgBatchCur.total + ' 张…';
+  if (imgBatchCur.current) {
+    $('imgBatchInfo').textContent = '第 ' + imgBatchCur.idx + '/' + imgBatchCur.total +
+      ' 张 (' + imgBatchCur.current + ') · 成功 ' + imgBatchCur.ok +
+      ' · 跳过 ' + imgBatchCur.skip + (imgBatchCur.failed.length ? ' · 失败 ' + imgBatchCur.failed.length : '');
+  }
+}
+function imgBatchPoll() {
+  fetch('/api/image-batch').then((x) => x.json()).then((b) => {
+    imgBatchCur = b;
+    if (!b.running) {
+      clearInterval(imgBatchTimer); imgBatchTimer = null;
+      imgBatchBusy = false;
+      $('imgBatchBtn').disabled = false;
+      $('imgBatchStop').disabled = true;
+      if (b.done) {
+        const fail = b.failed && b.failed.length ? '（失败 ' + b.failed.length + ': ' + b.failed.join('；') + '）' : '';
+        $('imgBatchInfo').textContent = '批量完成：成功 ' + b.ok + ' / 跳过 ' + b.skip + fail +
+          ' → ' + (b.outDir || '');
+      } else if (b.cancelled) {
+        $('imgBatchInfo').textContent = '已停止批量（已处理 ' + (b.idx || 0) + ' 张）';
+      }
+      return;
+    }
+    imgBatchRender();
+  }).catch(() => { /* server restart etc. */ });
+}
+
+$('imgBatchBtn').addEventListener('click', async () => {
+  if (imgBatchBusy) return;
+  const pk = await fetch('/api/pick-folder').then((x) => x.json());
+  if (!pk.ok) { if (!pk.cancelled) $('imgBatchInfo').textContent = '选择失败: ' + (pk.error || '?'); return; }
+  const r = await fetch('/api/image-batch', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dir: pk.dir, format: $('imgBatchFmt').value, cfg: buildJobCfg() }),
+  }).then((x) => x.json());
+  if (!r.ok) { $('imgBatchInfo').textContent = '批量启动失败: ' + (r.error || '?'); return; }
+  imgBatchBusy = true;
+  $('imgBatchBtn').disabled = true;
+  $('imgBatchStop').disabled = false;
+  $('imgBatchInfo').textContent = '批量开始：共 ' + r.total + ' 张 → ' + r.outDir;
+  if (imgBatchTimer) clearInterval(imgBatchTimer);
+  imgBatchTimer = setInterval(imgBatchPoll, 700);
+  imgBatchPoll();
+});
+
+$('imgBatchStop').addEventListener('click', async () => {
+  await fetch('/api/image-batch/cancel', { method: 'POST' });
+  $('imgBatchStop').disabled = true;
 });
 
 // ---------------------------------------------------------------- persist params

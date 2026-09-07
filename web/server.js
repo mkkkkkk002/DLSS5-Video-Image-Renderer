@@ -75,6 +75,24 @@ function cleanFrameDir() {
     } catch (e) { /* ignore */ }
 }
 
+// Idle path: only drop entries OLDER than `ageMs`. A still-image render that the user is still
+// looking at must survive (save-after-zoom >1 min used to fail because the whole dir was swept).
+function cleanFrameDirOlder(ageMs) {
+    const now = Date.now();
+    let entries = [];
+    try { entries = fs.readdirSync(FRAME_DIR); } catch (e) { return; }
+    for (const f of entries) {
+        const p = path.join(FRAME_DIR, f);
+        try {
+            const st = fs.statSync(p);
+            if (now - st.mtimeMs >= ageMs) {
+                if (st.isDirectory()) fs.rmSync(p, { recursive: true, force: true });
+                else fs.unlinkSync(p);
+            }
+        } catch (e) { /* ignore */ }
+    }
+}
+
 // Resolves the engine executable at job-start time (not module load) so a rebuild is picked
 // up automatically. Tries the canonical name first, then any dlss5nr*.exe in core/, so the
 // one-off rename used to dodge a locked-by-zombie exe never breaks the UI.
@@ -766,6 +784,103 @@ function handleLine(job, line) {
 
 // ------------------------------------------------------------------ server
 
+// ----------------------------------------------------------------- image batch (folder render)
+// Recursively collects still images under a folder (skipping anything that looks like one of our
+// own nr_* output folders), renders each with the user's model parameters and writes
+// <inputFolder>/nr_<inputFolderName>/nr_<basename>.<fmt>. Existing outputs are skipped so an
+// interrupted batch can be re-run to continue where it left off.
+let imgBatch = null; // { running, cancel, done, dir, outDir, fmt, files, total, idx, current, ok, skip, failed[] }
+
+const BATCH_FMT_EXT = { png: '.png', jpg: '.jpg' };
+
+function walkImages(dir, out) {
+    let list = [];
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return list; }
+    for (const ent of entries) {
+        const p = path.join(dir, ent.name);
+        if (ent.isDirectory()) {
+            const bn = ent.name.toLowerCase();
+            if (bn.startsWith('nr_') || bn.endsWith('_nr')) continue;   // our output folders
+            list = list.concat(walkImages(p, out));
+        } else if (IMAGE_EXT.includes(path.extname(ent.name).toLowerCase())) {
+            list.push(p);
+        }
+    }
+    return list;
+}
+
+async function renderStillOnce(inputImg, cfg) {
+    fs.mkdirSync(FRAME_DIR, { recursive: true });
+    const ts = Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+    const safeImg = path.join(FRAME_DIR, 'safeimg_' + ts + (path.extname(inputImg).toLowerCase() || '.png'));
+    const srcMp4 = path.join(FRAME_DIR, 'src_' + ts + '.mp4');
+    const outMp4 = path.join(FRAME_DIR, 'out_' + ts + '.mp4');
+    const png16 = path.join(FRAME_DIR, 'rendered_' + ts + '_16.png');
+    try {
+        await new Promise((ok, bad) => fs.copyFile(inputImg, safeImg,
+            (e) => (e ? bad(new Error('复制输入失败: ' + e.message)) : ok())));
+        await runFfmpeg(['-loop', '1', '-framerate', '30', '-i', safeImg,
+            '-frames:v', '3', '-pix_fmt', 'yuv444p', '-c:v', 'libx264', '-qp', '0',
+            '-preset', 'ultrafast', srcMp4]);
+        const exe = findEngine();
+        if (!fs.existsSync(exe)) throw new Error('engine not found');
+        const imgCfg = Object.assign({}, cfg || {}, {
+            frameGuidance: 0, startTime: 0, endTime: 0.1,
+            encoder: 'libx264', pixFmt: 'yuv444p', codecArgs: '-qp 0 -preset ultrafast',
+        });
+        const args = engineArgs(imgCfg, srcMp4, outMp4, true);
+        args.push('--png16', png16);
+        await runEngine(exe, args);
+        if (!fs.existsSync(png16)) {
+            const fb = path.join(FRAME_DIR, 'rendered_' + ts + '.png');
+            await runFfmpeg(['-i', outMp4, '-frames:v', '1', '-f', 'image2', fb]);
+            return fb;
+        }
+        return png16;
+    } finally {
+        try { fs.unlinkSync(safeImg); } catch (e) { /* ignore */ }
+        try { fs.unlinkSync(srcMp4); } catch (e) { /* ignore */ }
+        try { fs.unlinkSync(outMp4); } catch (e) { /* ignore */ }
+    }
+}
+
+async function runImageBatch() {
+    const b = imgBatch;
+    b.ok = 0; b.skip = 0; b.failed = []; b.idx = 0; b.done = false;
+    try { fs.mkdirSync(b.outDir, { recursive: true }); } catch (e) { /* ignore */ }
+    for (const file of b.files) {
+        if (b.cancel) break;
+        b.current = path.basename(file);
+        b.idx++;
+        const base = path.basename(file).replace(/\.[^.]+$/, '');
+        const dst = path.join(b.outDir, 'nr_' + base + BATCH_FMT_EXT[b.fmt]);
+        if (fs.existsSync(dst)) { b.skip++; continue; }           // resume support
+        let lastErr = null;
+        for (let attempt = 1; attempt <= 2; ++attempt) {   // one retry masks transient engine hiccups
+            try {
+                const png = await renderStillOnce(file, b.cfg);
+                if (b.fmt === 'png') fs.copyFileSync(png, dst);
+                else await runFfmpeg(['-i', png, '-q:v', '2', '-f', 'image2', dst]);
+                try { fs.unlinkSync(png); } catch (e) { /* ignore */ }
+                b.ok++;
+                lastErr = null;
+                break;
+            } catch (e) {
+                lastErr = e;
+                await new Promise((r) => setTimeout(r, 400));
+            }
+        }
+        if (lastErr) {
+            b.failed.push(path.basename(file) + ':' + (lastErr.message || '?').slice(0, 90));
+        }
+        b.current = null;
+    }
+    b.running = false;
+    b.done = true;
+    b.finishedAt = Date.now();
+}
+
 const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
 
@@ -1434,6 +1549,74 @@ const server = http.createServer(async (req, res) => {
 
     // "Save the rendered PNG to a user-chosen location": native save dialog (png/jpg), then
     // copies or re-encodes the frame to the picked file.
+    // Folder picker used by the image-batch feature (a whole folder of stills).
+    if (url.pathname === '/api/pick-folder' && req.method === 'GET') {
+        if (process.platform !== 'win32') {
+            return sendJson(res, 501, { ok: false, error: 'file picker only supported on Windows' });
+        }
+        const body =
+            "$dlg = New-Object System.Windows.Forms.OpenFileDialog; " +
+            "$dlg.Title = '选择要批量渲染的图片文件夹'; " +
+            "$dlg.CheckFileExists = $false; $dlg.CheckPathExists = $true; " +
+            "$dlg.ValidateNames = $false; $dlg.Filter = '文件夹|*.folder'; " +
+            "$dlg.FileName = '选择此文件夹'; " +
+            "$dlg.InitialDirectory = 'C:////'; ";
+        const r = await runFileDialog(body,
+            "$(if ([System.IO.Directory]::Exists($dlg.FileName)) { $dlg.FileName } else { Split-Path -Parent $dlg.FileName })");
+        if (r.error) return sendJson(res, 500, { ok: false, error: r.error });
+        if (r.cancelled) return sendJson(res, 200, { ok: false, cancelled: true });
+        return sendJson(res, 200, { ok: true, dir: r.path });
+    }
+
+    // Start an async whole-folder image render batch.
+    if (url.pathname === '/api/image-batch' && req.method === 'POST') {
+        const body = await readBody(req);
+        const dir = (body.dir || '').trim();
+        const format = String(body.format || 'png').toLowerCase();
+        if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+            return sendJson(res, 400, { ok: false, error: '文件夹不存在' });
+        }
+        if (!BATCH_FMT_EXT[format]) return sendJson(res, 400, { ok: false, error: '不支持的输出格式' });
+        if (imgBatch && imgBatch.running) {
+            return sendJson(res, 409, { ok: false, error: '已有批量任务在运行' });
+        }
+        const files = walkImages(dir);
+        if (!files.length) return sendJson(res, 400, { ok: false, error: '该文件夹下未找到图片' });
+        const outDir = path.join(dir, 'nr_' + path.basename(dir));
+        try { fs.mkdirSync(outDir, { recursive: true }); } catch (e) { /* ignore */ }
+        imgBatch = {
+            running: true, cancel: false, done: false, dir, outDir, fmt: format,
+            files, total: files.length, idx: 0, ok: 0, skip: 0, failed: [],
+            current: null, cfg: body.cfg || {},
+        };
+        runImageBatch();
+        return sendJson(res, 200, { ok: true, total: files.length, outDir });
+    }
+
+    // Poll progress of the current image batch.
+    if (url.pathname === '/api/image-batch' && req.method === 'GET') {
+        const b = imgBatch;
+        if (!b) return sendJson(res, 200, { running: false });
+        return sendJson(res, 200, {
+            running: b.running,
+            done: b.done,
+            cancelled: b.cancel && !b.running,
+            total: b.total,
+            idx: b.idx,
+            current: b.current,
+            ok: b.ok,
+            skip: b.skip,
+            failed: b.failed.slice(-8),
+            outDir: b.outDir,
+        });
+    }
+
+    // Cancel a running image batch (current image finishes, rest skipped).
+    if (url.pathname === '/api/image-batch/cancel' && req.method === 'POST') {
+        if (imgBatch) imgBatch.cancel = true;
+        return sendJson(res, 200, { ok: true });
+    }
+
     if (url.pathname === '/api/save-image' && req.method === 'GET') {
         const src = url.searchParams.get('src') || '';
         if (!isFramePath(src) || !fs.existsSync(src)) {
@@ -1513,7 +1696,9 @@ function bindServer(port) {
             const jobBusy = current && !current.finished;
             const jobFresh = current && (Date.now() - (current.t1 || 0)) < 30000;
             if (!jobBusy && !jobFresh && idleMs > uiIdleGraceMs) {
-                cleanFrameDir();
+                // Browser-closed cleanup, but keep anything newer than 10 minutes: the user may
+                // have just rendered an image and still be looking at it / about to save it.
+                cleanFrameDirOlder(10 * 60 * 1000);
             }
         }, 15000);
     });
