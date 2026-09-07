@@ -1407,12 +1407,16 @@ $('cancelBtn').addEventListener('click', async () => {
 });
 
 $('exitBtn').addEventListener('click', async () => {
-  if (!confirm('退出将立即停止当前渲染、清空缓存并结束本程序，确定退出吗？')) return;
+  if (!confirm('退出将立即停止当前渲染、清空缓存、结束本程序并关闭本页面，确定退出吗？')) return;
   $('exitBtn').disabled = true;
   $('startBtn').disabled = true;
   $('cancelBtn').disabled = true;
   try { await fetch('/api/exit', { method: 'POST' }); } catch (e) { /* process already going down */ }
-  $('statusText').textContent = '已退出，可以关闭本窗口';
+  // Auto-close the web page (works when the tab was script-opened); otherwise show a hint.
+  try { window.close(); } catch (e) { /* ignore */ }
+  setTimeout(() => {
+    $('statusText').textContent = '已正常退出（页面未自动关闭时请手动关闭本窗口）';
+  }, 700);
 });
 
 // ---------------------------------------------------------------- time range
