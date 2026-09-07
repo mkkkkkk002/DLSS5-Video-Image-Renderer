@@ -471,6 +471,7 @@
       <h3 style="font-size:13px; font-weight:600; color:var(--dim); margin:0 0 6px 0;">渲染进度</h3>
       <div class="bar"><i id="bar"></i></div>
       <div class="status" id="statusText">空闲</div>
+      <div class="meta" id="nowFile" style="margin-top:2px; display:none; color:#7ab8ff;"></div>
       <div class="meta" id="progStats" style="margin-top:2px; display:none;"></div>
       <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
       <div class="status done" id="exportMsg" style="margin-top:6px; display:none;"></div>
@@ -1165,10 +1166,10 @@ function updateQueueBox(q) {
   box.dataset.key = key;
   const act = (it, first, last) =>
     '<div style="display:flex; gap:4px; align-items:center; padding:2px 0; border-top:1px solid var(--line);">' +
-    '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + escHtml(it.out) + '">' + escHtml(it.label) + '</span>' +
     '<button class="btn" style="padding:0 6px; font-size:11px;" data-id="' + it.id + '" data-a="up" ' + (first ? 'disabled' : '') + '>▲</button>' +
     '<button class="btn" style="padding:0 6px; font-size:11px;" data-id="' + it.id + '" data-a="dn" ' + (last ? 'disabled' : '') + '>▼</button>' +
-    '<button class="btn" style="padding:0 6px; font-size:11px;" data-id="' + it.id + '" data-a="del">✕</button></div>';
+    '<button class="btn" style="padding:0 6px; font-size:11px;" data-id="' + it.id + '" data-a="del">✕</button>' +
+    '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + escHtml(it.out) + '">' + escHtml(it.label) + '</span></div>';
   box.innerHTML = items.map((it, k) => act(it, k === 0, k === items.length - 1)).join('');
   box.querySelectorAll('button[data-a]').forEach((b) => {
     b.addEventListener('click', async () => {
