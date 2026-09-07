@@ -167,7 +167,7 @@ int wmain(int argc, wchar_t **argv) {
     wchar_t *slash = wcsrchr(g_root, L'\\');
     if (slash) *slash = 0;
     SetCurrentDirectoryW(g_root);       // so "web\server.js" always resolves from project root
-    log_msg("=== DLSS5NR 服务守护 v1.3 启动, 根目录=%ls", g_root);
+    log_msg("=== DLSS5NR 服务守护 v1.4 启动, 根目录=%ls", g_root);
 
     // Dev self-test: just sweep the temp dirs, no server involved.
     if (argc > 1 && wcscmp(argv[1], L"--clean") == 0) {

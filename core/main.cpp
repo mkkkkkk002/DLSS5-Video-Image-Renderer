@@ -279,6 +279,8 @@ struct Options {
     bool frameReset = false;   // Per-frame reset: treat every frame independently (like a
                                // real-time filter over a video window, no cross-frame history)
     bool perf = false;         // --perf: print per-stage ms/frame breakdown at the end
+    int  gpuIdx = -1;          // --gpu-idx <N>: user-chosen DXGI adapter; -1 = auto
+    bool listGpus = false;     // --list-gpus: print every adapter and exit
     bool bypassNr = false;     // --bypass-nr: skip DLSS NR inference (diagnostic passthrough)
     std::string png16;         // --png16 <path>: write first frame as a 16-bit PNG (no banding)
     DlssNrSettings nr;
@@ -1139,6 +1141,7 @@ int wmain(int argc, wchar_t** argv) {
         std::string flag = narrow(argv[i]);
         if (flag == "--daemon") opt.daemon = true;
         else if (flag == "--perf") opt.perf = true;
+        else if (flag == "--list-gpus") opt.listGpus = true;
     }
 
     for (int i = 1; i < argc; ++i) {
@@ -1177,8 +1180,17 @@ int wmain(int argc, wchar_t** argv) {
         else if (a == "--residual-mult") parseFloat(v.c_str(), opt.residualMult);
         else if (a == "--frame-guidance") parseInt(v.c_str(), opt.frameGuidance);
         else if (a == "--depth-interval") parseInt(v.c_str(), opt.depthInterval);
+        else if (a == "--gpu-idx") parseInt(v.c_str(), opt.gpuIdx);
         else if (a == "--perf") { opt.perf = true; --i; }
     }
+
+    // GPU selection: list all adapters or honour the user-chosen DXGI index.
+    if (opt.listGpus) {
+        int n = d3dListGpus();
+        printf("[gpu] count=%d\n", n);
+        return 0;
+    }
+    if (opt.gpuIdx >= 0) d3dSetAdapter(opt.gpuIdx);
 
     // Single-shot CLI mode or resident daemon (--daemon). Both share DaemonState so a
     // --daemon process keeps every heavy resource (D3D12, model feature, snippet DLL) loaded

@@ -15,6 +15,9 @@ using Microsoft::WRL::ComPtr;
 // Everything here is synchronous: record a command list, execute it, wait on a fence. There is
 // no reason to pipeline an offline video pass, and the alternative is a fence ring buffer that
 // buys nothing when the CPU is feeding frames one at a time anyway.
+void d3dSetAdapter(int index);
+int  d3dListGpus();
+
 class D3D12Ctx {
 public:
     ~D3D12Ctx();

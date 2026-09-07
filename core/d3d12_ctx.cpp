@@ -4,6 +4,8 @@
 #include <cstring>
 #include <initializer_list>
 #include <vector>
+#include <dxgi1_4.h>
+#include <windows.h>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -20,8 +22,71 @@ void D3D12Ctx::setError(const char* msg) {
     printf("[d3d12] error: %s\n", msg);
 }
 
+// GPU selection is user-driven (web UI passes --gpu-idx). A -1 / unset still uses the
+// heuristic below (NVIDIA preferred, then most dedicated VRAM) as a sensible default.
+static int g_wantIdx = -1;
+void d3dSetAdapter(int index) { g_wantIdx = index; }
+
+static void collectAdapters(std::vector<ComPtr<IDXGIAdapter1>>& out) {
+    ComPtr<IDXGIFactory4> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return;
+    for (UINT i = 0; ; ++i) {
+        ComPtr<IDXGIAdapter1> a;
+        if (factory->EnumAdapters1(i, &a) == DXGI_ERROR_NOT_FOUND) break;
+        DXGI_ADAPTER_DESC1 d;
+        a->GetDesc1(&d);
+        if (d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;   // Microsoft Basic Render
+        out.push_back(a);
+    }
+}
+
+static void printAdapter(unsigned i, IDXGIAdapter1* a) {
+    DXGI_ADAPTER_DESC1 d;
+    a->GetDesc1(&d);
+    char name[128] = { 0 };
+    WideCharToMultiByte(CP_UTF8, 0, d.Description, -1, name, (int)sizeof(name) - 1, nullptr, nullptr);
+    printf("[gpu] %u: %s (vendor 0x%04x, vram %llu MB)\n",
+           i, name[0] ? name : "?", (unsigned)d.VendorId,
+           (unsigned long long)(d.DedicatedVideoMemory >> 20));
+    fflush(stdout);
+}
+
+int d3dListGpus() {
+    std::vector<ComPtr<IDXGIAdapter1>> list;
+    collectAdapters(list);
+    for (unsigned i = 0; i < list.size(); ++i) printAdapter(i, list[i].Get());
+    return (int)list.size();
+}
+
+static IDXGIAdapter1* pickBestAdapter() {
+    std::vector<ComPtr<IDXGIAdapter1>> list;
+    collectAdapters(list);
+    if (list.empty()) return nullptr;
+    unsigned chosen = 0;
+    if (g_wantIdx >= 0 && (unsigned)g_wantIdx < list.size()) {
+        chosen = (unsigned)g_wantIdx;              // user explicitly picked this one
+    } else {
+        UINT64 bestScore = 0;                      // default heuristic
+        for (unsigned i = 0; i < list.size(); ++i) {
+            DXGI_ADAPTER_DESC1 d;
+            list[i]->GetDesc1(&d);
+            UINT64 score = (d.VendorId == 0x10DE) ? 1000000000ULL : 0;
+            score += d.DedicatedVideoMemory;
+            if (score > bestScore) { bestScore = score; chosen = i; }
+        }
+    }
+    printf("[d3d12] using adapter %u:/n", chosen);
+    printAdapter(chosen, list[chosen].Get());
+    return list[chosen].Detach();
+}
+
 bool D3D12Ctx::init() {
-    HRESULT hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device));
+    ComPtr<IDXGIAdapter1> adapter(pickBestAdapter());   // may be null -> OS default
+    HRESULT hr = D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device));
+    if (FAILED(hr) && adapter) {
+        printf("[d3d12] preferred adapter failed (0x%08x), retrying with the system default\n", (unsigned)hr);
+        hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device));
+    }
     if (FAILED(hr)) {
         setError("D3D12CreateDevice failed");
         return false;
