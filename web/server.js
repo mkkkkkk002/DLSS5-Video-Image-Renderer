@@ -1582,7 +1582,8 @@ const server = http.createServer(async (req, res) => {
         }
         const files = walkImages(dir);
         if (!files.length) return sendJson(res, 400, { ok: false, error: '该文件夹下未找到图片' });
-        const outDir = path.join(dir, 'nr_' + path.basename(dir));
+        const wantOut = String(body.outDir || '').trim();
+        const outDir = wantOut ? wantOut : path.join(dir, 'nr_' + path.basename(dir));
         try { fs.mkdirSync(outDir, { recursive: true }); } catch (e) { /* ignore */ }
         imgBatch = {
             running: true, cancel: false, done: false, dir, outDir, fmt: format,
