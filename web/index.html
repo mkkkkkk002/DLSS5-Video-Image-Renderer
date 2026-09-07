@@ -626,9 +626,19 @@
       if (pr && pr.catch) pr.catch(() => { setTimeout(() => { try { v.play(); } catch (e) { /* ignore */ } }, 400); });
     } catch (e) { /* ignore */ }
   };
+  const softAlignStart = () => {
+    [200, 700].forEach((ms) => setTimeout(() => {
+      if (!inited || vM.paused || vO.paused) return;
+      try {
+        const expect = posOrig(vM.currentTime);
+        if (Math.abs(vO.currentTime - expect) > 0.03) vO.currentTime = expect;
+      } catch (e) { /* ignore */ }
+    }, ms));
+  };
   const autoPlay = () => {                 // muted autoplay is allowed; retry once if blocked
     if (!autoNext) return;
     muteAll();
+    softAlignStart();
     kick(vA); kick(vB);
   };
 
@@ -717,6 +727,7 @@
     try { vM.currentTime = 0; vO.currentTime = posOrig(0); } catch (e) { /* ignore */ }
     setTimeout(() => { restarting = false; }, 150);
     playBoth();
+    softAlignStart();
   };
   const maybeRestart = () => {
     const d = vM.duration;
@@ -736,9 +747,10 @@
     if (!vA.src) return;
     if (vA.paused) {
       alignOnce();
+      softAlignStart();
       playB.textContent = '…';
-      try { await vA.play(); } catch (e) { /* ignore */ }
-      try { if (vB.paused) await vB.play(); } catch (e) { /* ignore */ }
+      try { await vM.play(); } catch (e) { /* ignore */ }
+      try { if (vO.paused) await vO.play(); } catch (e) { /* ignore */ }
       setPlayIcon();
     } else { vA.pause(); vB.pause(); setPlayIcon(); }
   });
