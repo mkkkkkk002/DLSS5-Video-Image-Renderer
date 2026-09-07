@@ -1485,7 +1485,7 @@ const server = http.createServer(async (req, res) => {
 // LAN-reachable server must not be able to leak local files.
 server.listen(PORT, '127.0.0.1', () => {
     const url = 'http://127.0.0.1:' + PORT + '/';
-    console.log('dlss5nr web UI: ' + url);
+    console.log('DLSS5NR 视频渲染服务 v1.3 已启动 — Web 界面: ' + url);
     fs.mkdirSync(OUTPUTS_DIR, { recursive: true });
     cleanUploadsDir();   // fallback only: normal shutdown cleanup is done by server_guard.exe
     cleanFrameDir();     // fallback only: normal shutdown cleanup is done by server_guard.exe

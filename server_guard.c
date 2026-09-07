@@ -69,7 +69,7 @@ static int delete_tree(const wchar_t *dir) {
     HANDLE h = FindFirstFileW(pat, &fd);
     if (h == INVALID_HANDLE_VALUE) {
         if (GetLastError() != ERROR_FILE_NOT_FOUND) {
-            log_msg("  cannot open dir %ls (err %lu)", dir, GetLastError());
+            log_msg("  无法打开目录 %ls (错误码 %lu)", dir, GetLastError());
         }
         return 0;
     }
@@ -82,7 +82,7 @@ static int delete_tree(const wchar_t *dir) {
             if (!RemoveDirectoryW(full)) {
                 DWORD e = GetLastError();
                 if (e != ERROR_FILE_NOT_FOUND && e != ERROR_PATH_NOT_FOUND) {
-                    log_msg("  cannot remove dir %ls (err %lu)", full, e);
+                    log_msg("  无法删除目录 %ls (错误码 %lu)", full, e);
                 }
             }
         } else {
@@ -97,7 +97,7 @@ static int delete_tree(const wchar_t *dir) {
             }
             if (!ok) {
                 DWORD e = GetLastError();
-                log_msg("  DELETE FAILED %ls (err %lu, tries=5)", full, e);
+                log_msg("  删除失败 %ls (错误码 %lu, 重试5次后放弃)", full, e);
                 fail++;
             }
         }
@@ -113,7 +113,7 @@ static int cleanup_temp_dirs(void) {
     int f1 = delete_tree(p);
     swprintf_s(p, MAX_PATH * 2, L"%s\\.frame_previews", g_root);
     int f2 = delete_tree(p);
-    log_msg("sweep done: .tmp_uploads fails=%d, .frame_previews fails=%d", f1, f2);
+    log_msg("清理完成: .tmp_uploads 失败=%d, .frame_previews 失败=%d", f1, f2);
     return f1 + f2;
 }
 
@@ -135,7 +135,7 @@ static void kill_tree(DWORD pid) {
 
 static void shutdown_now(const char *why) {
     if (InterlockedExchange(&g_done, 1) != 0) return;   // already handled
-    log_msg("SHUTDOWN via %s", why);
+    log_msg("收到关闭信号: %s", why);
     if (g_child) {
         // kill node AND any ffmpeg/realesr it spawned; only then sweep, so no process can
         // recreate or hold files under .frame_previews while we delete it.
@@ -145,7 +145,7 @@ static void shutdown_now(const char *why) {
         g_child = NULL;
     }
     int fail = cleanup_temp_dirs();
-    log_msg("exit, residual_fail=%d", fail);
+    log_msg("已退出, 残留清理失败数=%d", fail);
     ExitProcess(fail ? 3 : 0);
 }
 
@@ -153,9 +153,9 @@ static void shutdown_now(const char *why) {
 // Ctrl+Close (window X). Returning TRUE marks the event handled; without it the process
 // would simply be killed and we would never get a chance to clean up.
 static BOOL WINAPI ctrl_handler(DWORD type) {
-    if (type == CTRL_C_EVENT)      { log_msg("ctrl event: CTRL_C");      shutdown_now("ctrl_c"); }
-    else if (type == CTRL_BREAK_EVENT) { log_msg("ctrl event: CTRL_BREAK"); shutdown_now("ctrl_break"); }
-    else if (type == CTRL_CLOSE_EVENT) { log_msg("ctrl event: CTRL_CLOSE (window X)"); shutdown_now("ctrl_close"); }
+    if (type == CTRL_C_EVENT)      { log_msg("控制台事件: CTRL_C");      shutdown_now("ctrl_c"); }
+    else if (type == CTRL_BREAK_EVENT) { log_msg("控制台事件: CTRL_BREAK"); shutdown_now("ctrl_break"); }
+    else if (type == CTRL_CLOSE_EVENT) { log_msg("控制台事件: 窗口被关闭 (X)"); shutdown_now("ctrl_close"); }
     else return FALSE;              // not ours
     return TRUE;
 }
@@ -167,12 +167,12 @@ int wmain(int argc, wchar_t **argv) {
     wchar_t *slash = wcsrchr(g_root, L'\\');
     if (slash) *slash = 0;
     SetCurrentDirectoryW(g_root);       // so "web\server.js" always resolves from project root
-    log_msg("=== guard start, root=%ls", g_root);
+    log_msg("=== DLSS5NR 服务守护 v1.3 启动, 根目录=%ls", g_root);
 
     // Dev self-test: just sweep the temp dirs, no server involved.
     if (argc > 1 && wcscmp(argv[1], L"--clean") == 0) {
         int fail = cleanup_temp_dirs();
-        log_msg("--clean exit, residual_fail=%d", fail);
+        log_msg("--clean 完成退出, 残留失败数=%d", fail);
         return fail ? 3 : 0;
     }
 
@@ -182,13 +182,13 @@ int wmain(int argc, wchar_t **argv) {
     if (GetFileAttributesW(node) == INVALID_FILE_ATTRIBUTES) {
         DWORD n = SearchPathW(NULL, L"node.exe", NULL, MAX_PATH, node, NULL);
         if (n == 0 || n >= MAX_PATH) {
-            log_msg("node.exe not found (tools nor PATH)");
+            log_msg("未找到 node.exe (tools 目录或 PATH 中都没有)");
             printf("ERROR: node.exe not found.\n");
             printf("  Expected bundled tools\\node.exe or node.exe on PATH.\n");
             return 2;
         }
     }
-    log_msg("node = %ls", node);
+    log_msg("node 路径 = %ls", node);
 
     wchar_t cmd[MAX_PATH * 2 + 96];
     swprintf_s(cmd, MAX_PATH * 2 + 96, L"\"%s\" \"%s\\web\\server.js\" --open", node, g_root);
@@ -199,29 +199,29 @@ int wmain(int argc, wchar_t **argv) {
     ZeroMemory(&pi, sizeof(pi));
 
     if (!CreateProcessW(node, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-        log_msg("CreateProcess FAILED err=%lu", GetLastError());
+        log_msg("启动 node 失败, 错误码=%lu", GetLastError());
         printf("ERROR: failed to launch node (error %lu).\n", GetLastError());
         return 2;
     }
     g_child = pi.hProcess;
     CloseHandle(pi.hThread);
-    log_msg("node started pid=%lu", pi.dwProcessId);
+    log_msg("node 已启动, 进程号=%lu", pi.dwProcessId);
 
     BOOL reg = SetConsoleCtrlHandler(ctrl_handler, TRUE);
-    log_msg("SetConsoleCtrlHandler -> %s", reg ? "OK" : "FAILED");
+    log_msg("注册关闭事件处理器 -> %s", reg ? "成功" : "失败");
 
     // Normal path: wait until the node child is gone (crash / killed / self-exit),
     // then sweep the temp dirs here on the main thread.
     DWORD rc = 1;
     DWORD wr = WaitForSingleObject(g_child, INFINITE);
-    log_msg("child wait returned %lu (g_done=%ld)", wr, (long)g_done);
+    log_msg("等待子进程结束返回 %lu (g_done=%ld)", wr, (long)g_done);
     if (wr == WAIT_OBJECT_0 && InterlockedExchange(&g_done, 1) == 0) {
         DWORD code = 1;
         GetExitCodeProcess(g_child, &code);
         rc = code;
-        log_msg("child exited code=%lu, sweeping temp dirs", code);
+        log_msg("子进程已退出 code=%lu, 开始清理临时目录", code);
         int fail = cleanup_temp_dirs();
-        log_msg("exit, residual_fail=%d", fail);
+        log_msg("已退出, 残留清理失败数=%d", fail);
     }
     CloseHandle(g_child);
     g_child = NULL;
