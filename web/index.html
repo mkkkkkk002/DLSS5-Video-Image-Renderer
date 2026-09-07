@@ -476,9 +476,6 @@
       <div class="status done" id="exportMsg" style="margin-top:6px; display:none;"></div>
       <h3 style="font-size:13px; font-weight:600; color:var(--dim); margin:8px 0 4px 0;">渲染队列</h3>
       <div id="queueBox" style="display:none; font-size:12px; line-height:1.6;"></div>
-      <div style="display:flex; justify-content:center; margin-top:14px;">
-        <button class="exit-power" id="exitBtn" title="点击即可清除缓存，正常退出程序">⏻</button>
-      </div>
     </div>
   </div>
 
@@ -847,24 +844,38 @@
 
 <!-- power-style exit button -->
 <style>
+#exitWrap {
+  position: fixed; left: 50%; bottom: 26px;
+  transform: translateX(-50%); z-index: 700;
+  display: flex; justify-content: center;
+}
 .exit-power {
-  width: 72px; height: 72px; border-radius: 50%;
-  font-size: 34px; line-height: 1;
-  color: #fff; background: radial-gradient(circle at 50% 35%, #a33038, #6e1219);
-  border: 3px solid #ff5d5d;
-  box-shadow: 0 0 0 4px rgba(255,93,93,.18), 0 6px 18px rgba(0,0,0,.45);
+  width: 96px; height: 96px; border-radius: 50%;
+  font-size: 44px; line-height: 1;
+  color: #fff; background: radial-gradient(circle at 50% 34%, #a9353d, #5f0f15);
+  border: 3px solid #b03a3a;
+  box-shadow: 0 4px 14px rgba(0,0,0,.4);   /* resting: no coloured glow (灯熄灭) */
   cursor: pointer;
-  transition: transform .12s ease, box-shadow .12s ease, filter .12s ease;
+  transition: transform .15s ease, box-shadow .15s ease;
   display: inline-flex; align-items: center; justify-content: center;
 }
 .exit-power:hover {
-  transform: scale(1.12);
-  filter: brightness(1.15);
-  box-shadow: 0 0 26px rgba(255,80,80,.55), 0 6px 22px rgba(0,0,0,.5);
+  transform: scale(1.06);
+  animation: exitBreath 1.5s ease-in-out infinite;   /* breathing glow only while hovering */
 }
-.exit-power:active { transform: scale(.96); }
-.exit-power:disabled { opacity: .45; cursor: default; }
+@keyframes exitBreath {
+  0%, 100% { box-shadow: 0 0 12px 2px rgba(255,90,90,.45); }
+  50%      { box-shadow: 0 0 34px 10px rgba(255,90,90,.85); }
+}
+.exit-power:active { transform: scale(.95); }
+.exit-power:disabled { opacity: .45; cursor: default; animation: none; }
 </style>
+
+
+<!-- Power-style exit button: fixed bottom-center, breathing glow only on hover -->
+<div id="exitWrap">
+  <button class="exit-power" id="exitBtn" title="点击即可清除缓存，正常退出程序">⏻</button>
+</div>
 
 <!-- Floating log panel (bottom-right). Default folded; click the header to expand. -->
 <div id="logPanel" class="log-panel folded" aria-live="polite">
