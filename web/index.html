@@ -1157,39 +1157,80 @@ function updateQueueBox(q) {
   if (!box) return;
   queueSnapshot = ((q && q.items) || []).slice();
   const items = queueSnapshot;
-  if (!items.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  if (!items.length) { box.style.display = 'none'; box.innerHTML = ''; window.__qDrag = null; return; }
   box.style.display = '';
-  box.innerHTML = items.map((it) =>
-    '<div draggable="true" data-id="' + it.id + '" ' +
-    'style="display:flex; gap:8px; align-items:center; padding:4px 2px; border-top:1px solid var(--line); cursor:grab; user-select:none;">' +
-    '<span style="color:var(--dim);">⠿</span>' +
-    '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + escHtml(it.out) + '">' + escHtml(it.label) + '</span>' +
-    '<button class="btn" style="padding:0 8px; font-size:12px;">✕</button></div>'
-  ).join('');
-  box.querySelectorAll('div[draggable]').forEach((row) => {
-    const id = row.dataset.id;
-    row.addEventListener('dragstart', (e) => { window.__qDrag = id; row.style.opacity = '.4'; e.dataTransfer.effectAllowed = 'move'; });
-    row.addEventListener('dragend', () => { row.style.opacity = ''; window.__qDrag = null; });
-    row.addEventListener('dragover', (e) => { e.preventDefault(); row.style.background = 'rgba(255,255,255,.06)'; });
-    row.addEventListener('dragleave', () => { row.style.background = ''; });
-    row.addEventListener('drop', async (e) => {
-      e.preventDefault(); row.style.background = '';
-      const from = window.__qDrag; const to = id;
-      if (!from || from === to) return;
-      const ids = queueSnapshot.map((x) => x.id);
-      const fi = ids.indexOf(from), ti = ids.indexOf(to);
-      if (fi < 0 || ti < 0) return;
-      ids.splice(fi, 1);
-      ids.splice(ti, 0, from);
-      await fetch('/api/queue-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
-      poll();
-    });
-    row.querySelector('button').addEventListener('click', async () => {
-      await fetch('/api/queue-remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
-      poll();
-    });
-  });
+  // Never rebuild the DOM while a drag is in progress (the 500ms poll would replace the row
+  // mid-drag and cancel the operation). Also skip rebuilds when nothing changed.
+  if (window.__qDrag) return;
+  const key = items.map((x) => x.id).join('|');
+  if (key === (box.dataset.key || '')) return;
+  box.dataset.key = key;
+  box.innerHTML =
+    items.map((it) =>
+      '<div draggable="true" data-id="' + it.id + '" ' +
+      'style="display:flex; gap:8px; align-items:center; padding:4px 2px; border-top:1px solid var(--line); cursor:grab; user-select:none;">' +
+      '<span style="color:var(--dim);">⠿</span>' +
+      '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + escHtml(it.out) + '">' + escHtml(it.label) + '</span>' +
+      '<button class="btn" style="padding:0 8px; font-size:12px;">✕</button></div>'
+    ).join('') +
+    '<div data-role="queue-end" style="height:22px; border-radius:4px; margin-top:2px; border:1px dashed transparent;"></div>';
 }
+
+// One-time drag & drop wiring for the queue panel (event delegation; never re-bound per rebuild).
+(function () {
+  const box = $('queueBox');
+  if (!box || box.__qBound) return;
+  box.__qBound = true;
+  const clearFx = () => {
+    box.querySelectorAll('[data-id]').forEach((r) => { r.style.opacity = ''; r.style.boxShadow = ''; });
+    const z = box.querySelector('[data-role="queue-end"]');
+    if (z) z.style.background = '';
+  };
+  box.addEventListener('dragstart', (e) => {
+    const row = e.target.closest ? e.target.closest('[data-id]') : null;
+    if (!row) return;
+    window.__qDrag = row.dataset.id;
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', row.dataset.id); } catch (err) { /* ignore */ }
+    row.style.opacity = '.4';
+  });
+  box.addEventListener('dragend', () => { window.__qDrag = null; clearFx(); });
+  box.addEventListener('dragover', (e) => {
+    if (!window.__qDrag) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    clearFx();
+    const row = e.target.closest ? e.target.closest('[data-id]') : null;
+    const end = e.target.closest ? e.target.closest('[data-role="queue-end"]') : null;
+    if (row) row.style.boxShadow = 'inset 0 2px 0 0 #6aa7ff';
+    else if (end) end.style.background = 'rgba(106,167,255,.25)';
+  });
+  box.addEventListener('drop', (e) => {
+    if (!window.__qDrag) return;
+    e.preventDefault();
+    const from = window.__qDrag;
+    window.__qDrag = null;
+    clearFx();
+    const ids = queueSnapshot.map((x) => x.id);
+    if (!ids.includes(from)) return;
+    const row = e.target.closest ? e.target.closest('[data-id]') : null;
+    const to = row ? row.dataset.id : null;
+    const arr = ids.filter((x) => x !== from);
+    const ins = (to && arr.includes(to)) ? Math.min(ids.indexOf(to), arr.length) : arr.length;
+    arr.splice(ins, 0, from);
+    fetch('/api/queue-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: arr }) })
+      .then(() => poll()).catch(() => poll());
+  });
+  box.addEventListener('click', (e) => {
+    const btn = e.target.closest ? e.target.closest('button') : null;
+    if (!btn) return;
+    const row = btn.closest('[data-id]');
+    if (!row) return;
+    const id = row.dataset.id;
+    fetch('/api/queue-remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) })
+      .then(() => poll()).catch(() => poll());
+  });
+})();
 function renderStatus(s) {
   updateQueueBox(s.queue);
   $('startBtn').textContent = s.running ? '加入队列' : '开始处理';
