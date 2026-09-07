@@ -1187,6 +1187,16 @@ function renderStatus(s) {
   updateQueueBox(s.queue);
   $('startBtn').textContent = s.running ? '加入队列' : '开始处理';
   $('cancelBtn').disabled = !s.running;
+  // "正在渲染: <file>" next to the progress bar
+  const nowF = $('nowFile');
+  if (nowF) {
+    if (s.running && s.output) {
+      nowF.textContent = '正在渲染: ' + String(s.output).split(/[\\/]/).pop();
+      nowF.style.display = '';
+    } else {
+      nowF.style.display = 'none';
+    }
+  }
   // Import each finished (queue) job into the video compare as it completes. lastDone.id lets us
   // dedupe; the very first poll after a page load only records it (no surprise re-import of old
   // results), afterwards every new finished job auto-loads its own pair + window start.
