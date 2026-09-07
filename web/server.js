@@ -265,7 +265,8 @@ function runFileDialog(scriptBody, valueExpr) {
     });
 }
 
-let current = null;   // { id, child, done, total, lines, finished, code }
+let current = null;   // { id, child, done, total, lines, finished, code }  (ACTIVE job only)
+const jobQueue = [];   // jobs waiting behind the active one (each carries its own cfg snapshot)
 let nextId = 1;
 
 const MIME = {
@@ -517,10 +518,35 @@ function buildSteps(cfg, finalOut) {
     return steps;
 }
 
-function startJob(cfg) {
-    if (current && !current.finished) {
-        return { ok: false, error: 'a job is already running' };
+function jobLabel(job) {
+    const c = job.cfg || {};
+    const n = (c.fileName || '').trim();
+    return n ? (/\.[A-Za-z0-9]{1,5}$/.test(n) ? n : n + '.mp4') : path.basename(c.input || 'clip');
+}
+function queueInfo() {
+    return {
+        count: jobQueue.length,
+        items: jobQueue.map((j) => ({
+            id: j.id,
+            label: jobLabel(j),
+            out: j.output,
+            encoder: (j.cfg && j.cfg.encoder) || '',
+            passes: j.steps.length,
+        })),
+    };
+}
+function maybeRunNext() {
+    if (current && !current.finished) return;      // still busy
+    const nx = jobQueue.shift();
+    if (!nx) return;
+    current = nx;
+    if (nx.steps.length > 1) {
+        nx.lines.push(`whole-video multi-pass: ${nx.steps.length} full renders in series (final = ${nx.output})`);
     }
+    runNextPass(nx);
+}
+
+function startJob(cfg) {
     if (!fs.existsSync(findEngine())) {
         return { ok: false, error: 'engine not found: ' + findEngine() };
     }
@@ -553,13 +579,17 @@ function startJob(cfg) {
         preview: null,
         export: null,
     };
-    current = job;
-    if (job.steps.length > 1) {
-        job.lines.push(
-            `whole-video multi-pass: ${job.steps.length} full renders in series (final = ${finalOut})`);
-    }
-    runNextPass(job);
-    return { ok: true, id: job.id, output: finalOut, passes: job.steps.length };
+    jobQueue.push(job);                              // enqueue: runs when the queue reaches it
+    maybeRunNext();                                  // start now if nothing is running
+    const runningNow = current === job && !job.finished;
+    return {
+        ok: true,
+        id: job.id,
+        output: finalOut,
+        passes: job.steps.length,
+        state: runningNow ? 'running' : 'queued',
+        queueLen: jobQueue.length,
+    };
 }
 
 function jobFinish(job, cancelled) {
@@ -574,6 +604,7 @@ function jobFinish(job, cancelled) {
         job.finished = true;
         job.code = 0;
     }
+    maybeRunNext();                                  // let the next queued job start
 }
 
 function runNextPass(job) {
@@ -593,6 +624,7 @@ function runNextPass(job) {
         job.lines.push('ERROR: engine not found: ' + exe);
         job.finished = true;
         job.code = -1;
+        maybeRunNext();
         return;
     }
     let args;
@@ -604,6 +636,7 @@ function runNextPass(job) {
         job.lines.push('ERROR: ' + e.message);
         job.finished = true;
         job.code = -1;
+        maybeRunNext();
         return;
     }
     const child = spawn(exe, args, { cwd: ROOT, windowsHide: true });
@@ -631,6 +664,7 @@ function runNextPass(job) {
             job.lines.push('ERROR: engine failed to start: ' + e.message);
             job.finished = true;
             job.code = -1;
+            maybeRunNext();
         }
     });
     child.on('close', (code) => {
@@ -657,6 +691,7 @@ function onPassDone(job, code) {
         job.lines.push('ERROR: engine exit code ' + (code === null ? -1 : code) + ' (see log above)');
         job.finished = true;
         job.code = code === null ? -1 : code;
+        maybeRunNext();
     }
 }
 
@@ -685,9 +720,11 @@ function purgeUploads(keep, kind) {
         keepSet.add(path.resolve(keep));
         kind = kind || uploadKind(keep) || null;
     }
-    // A running whole-video job may still be reading its source upload: never purge it.
-    if (current && !current.finished && current.steps[0] && isTempUpload(current.steps[0].input)) {
-        keepSet.add(path.resolve(current.steps[0].input));
+    // Running AND queued whole-video jobs may still need their source upload: never purge those.
+    for (const j of [current].concat(jobQueue)) {
+        if (j && j.steps && j.steps[0] && isTempUpload(j.steps[0].input)) {
+            keepSet.add(path.resolve(j.steps[0].input));
+        }
     }
     try {
         for (const f of fs.readdirSync(UPLOADS_DIR)) {
@@ -726,7 +763,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/status' && req.method === 'GET') {
         uiLastPoll = Date.now();
         const j = current;
-        if (!j) return sendJson(res, 200, { running: false, lines: [], lineCount: 0 });
+        if (!j) return sendJson(res, 200, { running: false, lines: [], lineCount: 0, queue: queueInfo() });
         let outputSize = null;
         if (j.output && fs.existsSync(j.output)) {
             try { outputSize = fs.statSync(j.output).size; } catch (e) {}
@@ -782,6 +819,7 @@ const server = http.createServer(async (req, res) => {
             outputSize,
             lines: j.lines.slice(since),
             lineCount,
+            queue: queueInfo(),
         });
     }
 
@@ -891,6 +929,16 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 400, { ok: false, error: '结束时间必须大于开始时间 (' + _st + 's -> ' + _et + 's)' });
         }
         return sendJson(res, 200, startJob(body));
+    }
+
+    if (url.pathname === '/api/queue-remove' && req.method === 'POST') {
+        const body = await readBody(req);
+        const idx = jobQueue.findIndex((j) => String(j.id) === String(body.id));
+        if (idx >= 0) {
+            jobQueue.splice(idx, 1);
+            return sendJson(res, 200, { ok: true, queue: queueInfo() });
+        }
+        return sendJson(res, 200, { ok: false, error: 'job not in queue (running jobs need 停止)' });
     }
 
     if (url.pathname === '/api/cancel' && req.method === 'POST') {

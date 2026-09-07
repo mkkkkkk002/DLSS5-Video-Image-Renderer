@@ -473,6 +473,8 @@
       <div class="meta" id="progStats" style="margin-top:2px; display:none;"></div>
       <hr style="margin:8px 0; border:0; border-top:1px solid var(--line);">
       <div class="status done" id="exportMsg" style="margin-top:6px; display:none;"></div>
+      <h3 style="font-size:13px; font-weight:600; color:var(--dim); margin:8px 0 4px 0;">渲染队列</h3>
+      <div id="queueBox" style="display:none; font-size:12px; line-height:1.6;"></div>
     </div>
   </div>
 
@@ -1146,7 +1148,34 @@ function fmtDur(sec) {
     : `${m}:${String(s).padStart(2, '0')}`;
 }
 
+function escHtml(t) {
+  return String(t == null ? '' : t).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[c]);
+}
+// Renders the pending render queue from /api/status -> queue.
+function updateQueueBox(q) {
+  const box = $('queueBox');
+  if (!box) return;
+  const items = (q && q.items) || [];
+  if (!items.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = '';
+  box.innerHTML = items.map((it) =>
+    '<div style="display:flex; gap:6px; align-items:center; padding:3px 0; border-top:1px solid var(--line);">' +
+    '<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + escHtml(it.out) + '">#' + it.id + ' ' + escHtml(it.label) + '</span>' +
+    (it.encoder ? '<span style="color:var(--dim);">' + escHtml(it.encoder) + '</span>' : '') +
+    '<button class="btn" style="padding:0 8px; font-size:12px;" data-id="' + it.id + '">✕</button></div>'
+  ).join('');
+  box.querySelectorAll('button[data-id]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      await fetch('/api/queue-remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: b.dataset.id }) });
+      poll();
+    });
+  });
+}
 function renderStatus(s) {
+  updateQueueBox(s.queue);
+  $('cancelBtn').disabled = !s.running;
   const doneF = s.overallDone || 0, totalF = s.overallTotal || 0;
   const pct = totalF > 0 ? Math.min(100, (doneF / totalF) * 100) : 0;
   $('bar').style.width = pct + '%';
@@ -1259,10 +1288,9 @@ $('startBtn').addEventListener('click', async () => {
     endTime: et,
   }, buildJobCfg());
 
-  $('startBtn').disabled = true;
-  $('cancelBtn').disabled = false;
-  $('statusText').textContent = '启动中…';
   $('exportMsg').style.display = 'none';
+  $('statusText').textContent = '提交中…';
+  $('cancelBtn').disabled = false;
 
   const r = await fetch('/api/start', {
     method: 'POST',
@@ -1276,7 +1304,18 @@ $('startBtn').addEventListener('click', async () => {
     window.__vdStart = st;
     window.__vdAutoDone = false;
   }
-
+  if (r.ok) {
+    if (r.state === 'queued') {
+      $('statusText').textContent = '已加入渲染队列 #' + r.id + '（前方还有 ' + Math.max(0, (r.queueLen || 1) - 1) + ' 个任务，按各自参数依次渲染）';
+      $('statusText').className = 'status';
+    } else if (r.state === 'running') {
+      $('statusText').textContent = '渲染中…';
+    }
+  } else {
+    $('statusText').textContent = '提交失败: ' + (r.error || '?');
+    $('statusText').className = 'status err';
+    return;
+  }
   if (timer) clearInterval(timer);
   timer = setInterval(poll, 500);
   poll();
