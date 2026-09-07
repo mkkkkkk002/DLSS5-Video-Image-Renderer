@@ -964,6 +964,23 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: false, error: 'job not in queue (running jobs need 停止)' });
     }
 
+    // Reorder the pending queue (drag & drop sends the full new id order).
+    if (url.pathname === '/api/queue-order' && req.method === 'POST') {
+        const body = await readBody(req);
+        const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+        const have = jobQueue.map((j) => String(j.id));
+        const okSet = ids.length === have.length &&
+            new Set(ids).size === ids.length &&
+            ids.every((x) => have.includes(x));
+        if (!okSet) {
+            return sendJson(res, 400, { ok: false, error: 'invalid order (must be a permutation of the queued ids)' });
+        }
+        const byId = new Map(jobQueue.map((j) => [String(j.id), j]));
+        jobQueue.length = 0;
+        ids.forEach((x) => jobQueue.push(byId.get(x)));
+        return sendJson(res, 200, { ok: true, queue: queueInfo() });
+    }
+
     if (url.pathname === '/api/cancel' && req.method === 'POST') {
         if (current && !current.finished) {
             current.cancelled = true;
