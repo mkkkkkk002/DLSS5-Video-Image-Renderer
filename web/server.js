@@ -410,10 +410,105 @@ function probe(input) {
     });
 }
 
-// Builds the engine argument list for one pass. Only the first pass (from the original file)
-// honours the crop window; later passes re-render the previous pass's full output. When
-// `master` is true the pass writes the lossless 10-bit intermediate (two-stage flow): the user's
-// encoder/pixel-format/codec args are deferred to /api/export so encoding never re-runs the model.
+// ============================================================ render-parameter metadata
+// The engine stamps outputs with the render parameters: mp4/mkv as a container comment
+// ("render_cfg=" + base64url JSON), PNG as a tEXt chunk, JPG as a COM marker. These helpers
+// read the payload back so a finished file can restore the exact settings in the UI.
+const META_KEY = 'render_cfg=';
+
+function b64urlDecode(s) {
+    if (s.length % 4 === 1) s += '=';
+    return Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+}
+
+// PNG: parse chunk stream, find tEXt with keyword render_cfg. (ffprobe cannot read PNG tEXt.)
+function metaFromPng(buf) {
+    if (buf.length < 24 || buf[0] !== 0x89 || buf[1] !== 0x50 || buf[2] !== 0x4e || buf[3] !== 0x47)
+        return null;
+    let pos = 8;
+    while (pos + 12 <= buf.length) {
+        const len = buf.readUInt32BE(pos);
+        const type = buf.toString('latin1', pos + 4, pos + 8);
+        if (type === 'IEND') break;
+        if (pos + 12 + len > buf.length) return null;
+        if (type === 'tEXt') {
+            const data = buf.slice(pos + 8, pos + 8 + len);   // keyword\0text
+            const nul = data.indexOf(0);
+            if (nul > 0 && nul < data.length - 1) {
+                const key = data.toString('latin1', 0, nul);
+                const text = data.toString('latin1', nul + 1);
+                if (key === 'render_cfg' && text.startsWith(META_KEY))
+                    return b64urlDecode(text.slice(META_KEY.length));
+            }
+        }
+        pos += 12 + len;
+    }
+    return null;
+}
+
+// JPG: scan markers, read COM (FF FE) segments for the render_cfg payload.
+function metaFromJpg(buf) {
+    let pos = 2;   // skip SOI
+    while (pos + 4 <= buf.length) {
+        if (buf[pos] !== 0xff) return null;
+        const m = buf[pos + 1];
+        if (m === 0xd8) { pos += 2; continue; }             // stray SOI
+        if (m >= 0xd0 && m <= 0xd7) { pos += 2; continue; } // standalone
+        if (m === 0xd9 || m === 0xda) return null;          // EOI / SOS: no more COM after scan
+        if (pos + 4 > buf.length) return null;
+        const segLen = buf.readUInt16BE(pos + 2);           // includes the 2 length bytes
+        if (m === 0xfe) {
+            const payload = buf.toString('latin1', pos + 4, pos + 2 + segLen);
+            if (payload.startsWith(META_KEY))
+                return b64urlDecode(payload.slice(META_KEY.length));
+        }
+        pos += 2 + segLen;
+    }
+    return null;
+}
+
+// Read render-parameter JSON from any of the formats the engine writes. Returns null when the
+// file carries no render metadata.
+function readRenderMeta(file) {
+    return new Promise((resolve) => {
+        const ext = path.extname(file).toLowerCase();
+        if (ext === '.mp4' || ext === '.mkv' || ext === '.mov' || ext === '.m4v') {
+            execFile('ffprobe',
+                ['-v', 'error', '-show_entries', 'format_tags=comment',
+                 '-of', 'default=noprint_wrappers=1:nokey=1', file],
+                { windowsHide: true, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 },
+                (err, stdout) => {
+                    const text = (stdout || '').trim();
+                    if (err || !text.startsWith(META_KEY)) return resolve(null);
+                    try { resolve(JSON.parse(b64urlDecode(text.slice(META_KEY.length)))); }
+                    catch (e) { resolve(null); }
+                });
+            return;
+        }
+        if (ext === '.png' || ext === '.jpg' || ext === '.jpeg') {
+            fs.readFile(file, (err, buf) => {
+                if (err) return resolve(null);
+                const json = ext === '.png' ? metaFromPng(buf) : metaFromJpg(buf);
+                if (!json) return resolve(null);
+                try { resolve(JSON.parse(json)); } catch (e) { resolve(null); }
+            });
+            return;
+        }
+        resolve(null);
+    });
+}
+
+// Stamp render params onto a png/jpg via the engine's standalone subcommand (server-side
+// transcodes drop the metadata, so re-inject after any ffmpeg re-encode).
+function stampRenderMeta(file, jsonObj) {
+    const exe = findEngine();
+    const json = JSON.stringify(jsonObj || {});
+    return new Promise((resolve) => {
+        execFile(exe, ['--meta-inject', file, '--meta-json', json],
+            { windowsHide: true, timeout: 20000 }, (err) => resolve(!err));
+    });
+}
+
 function engineArgs(cfg, input, output, useWindow, master) {
     const { snippet, forwarder } = resolveModelFiles(cfg);
     const args = [
@@ -439,6 +534,8 @@ function engineArgs(cfg, input, output, useWindow, master) {
     if (!master && cfg.pixFmt) args.push('--pix-fmt', cfg.pixFmt);
     args.push('--residual-mult', String(cfg.residualMult ?? 1.0));
     args.push('--frame-guidance', String(cfg.frameGuidance ?? 3));
+    if (cfg.frameGuidance !== 0 && cfg.mvecQuality !== undefined && cfg.mvecQuality !== 2)
+        args.push('--mvec-quality', String(cfg.mvecQuality));
     const _gi = parseInt(cfg.gpuIdx, 10);
     if (!isNaN(_gi) && _gi >= 0) args.push('--gpu-idx', String(_gi));
     args.push('--depth-interval', String(cfg.depthInterval ?? 0));
@@ -849,39 +946,64 @@ function walkVideos(dir) {
     return list;
 }
 
+// Render one still image (or one canvas frame) through the engine, optionally repeated
+// renderPasses times in a generative loop: pass 1 renders the input image, every later pass
+// renders the previous pass's output PNG as if it were a brand-new still, so the result is the
+// N-th generation of model enhancement — the still-image analogue of the whole-video 渲染次数.
+// Each pass is a fresh engine process; the returned path is the final pass's PNG.
 async function renderStillOnce(inputImg, cfg) {
     fs.mkdirSync(FRAME_DIR, { recursive: true });
+    const passes = Math.max(1, parseInt((cfg || {}).renderPasses, 10) || 1);
     const ts = Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
-    const safeImg = path.join(FRAME_DIR, 'safeimg_' + ts + (path.extname(inputImg).toLowerCase() || '.png'));
-    const srcMp4 = path.join(FRAME_DIR, 'src_' + ts + '.mp4');
-    const outMp4 = path.join(FRAME_DIR, 'out_' + ts + '.mp4');
-    const png16 = path.join(FRAME_DIR, 'rendered_' + ts + '_16.png');
-    try {
-        await new Promise((ok, bad) => fs.copyFile(inputImg, safeImg,
-            (e) => (e ? bad(new Error('复制输入失败: ' + e.message)) : ok())));
-        await runFfmpeg(['-loop', '1', '-framerate', '30', '-i', safeImg,
-            '-frames:v', '3', '-pix_fmt', 'yuv444p', '-c:v', 'libx264', '-qp', '0',
-            '-preset', 'ultrafast', srcMp4]);
-        const exe = findEngine();
-        if (!fs.existsSync(exe)) throw new Error('engine not found');
-        const imgCfg = Object.assign({}, cfg || {}, {
-            frameGuidance: 0, startTime: 0, endTime: 0.1,
-            encoder: 'libx264', pixFmt: 'yuv444p', codecArgs: '-qp 0 -preset ultrafast',
-        });
-        const args = engineArgs(imgCfg, srcMp4, outMp4, true);
-        args.push('--png16', png16);
-        await runEngine(exe, args);
-        if (!fs.existsSync(png16)) {
-            const fb = path.join(FRAME_DIR, 'rendered_' + ts + '.png');
-            await runFfmpeg(['-i', outMp4, '-frames:v', '1', '-f', 'image2', fb]);
-            return fb;
+    let curInput = inputImg;
+    let prevOutput = null;   // intermediate pass output, removed once the next pass copied it
+    let finalPng = null;
+    for (let pass = 1; pass <= passes; ++pass) {
+        const safeImg = path.join(FRAME_DIR, `safeimg_${ts}_p${pass}` +
+            (path.extname(curInput).toLowerCase() || '.png'));
+        const srcMp4 = path.join(FRAME_DIR, `src_${ts}_p${pass}.mp4`);
+        const outMp4 = path.join(FRAME_DIR, `out_${ts}_p${pass}.mp4`);
+        const png16 = path.join(FRAME_DIR, `rendered_${ts}_p${pass}_16.png`);
+        const png8 = path.join(FRAME_DIR, `rendered_${ts}_p${pass}.png`);
+        let passOut = null;
+        try {
+            await new Promise((ok, bad) => fs.copyFile(curInput, safeImg,
+                (e) => (e ? bad(new Error('复制输入失败: ' + e.message)) : ok())));
+            // The previous pass's output was only needed as this pass's input; free it now.
+            if (prevOutput && fs.existsSync(prevOutput)) {
+                try { fs.unlinkSync(prevOutput); } catch (e) { /* ignore */ }
+                prevOutput = null;
+            }
+            await runFfmpeg(['-loop', '1', '-framerate', '30', '-i', safeImg,
+                '-frames:v', '3', '-pix_fmt', 'yuv444p', '-c:v', 'libx264', '-qp', '0',
+                '-preset', 'ultrafast', srcMp4]);
+            const exe = findEngine();
+            if (!fs.existsSync(exe)) throw new Error('engine not found');
+            const imgCfg = Object.assign({}, cfg || {}, {
+                frameGuidance: 0, startTime: 0, endTime: 0.1,
+                encoder: 'libx264', pixFmt: 'yuv444p', codecArgs: '-qp 0 -preset ultrafast',
+            });
+            const args = engineArgs(imgCfg, srcMp4, outMp4, true);
+            args.push('--png16', png16);
+            await runEngine(exe, args);
+            if (fs.existsSync(png16)) passOut = png16;
+            else {
+                await runFfmpeg(['-i', outMp4, '-frames:v', '1', '-f', 'image2', png8]);
+                passOut = png8;
+            }
+            if (pass === passes) {
+                finalPng = passOut;                 // survive: this is the returned result
+            } else {
+                prevOutput = passOut;               // consumed by the next pass
+            }
+        } finally {
+            try { fs.unlinkSync(safeImg); } catch (e) { /* ignore */ }
+            try { fs.unlinkSync(srcMp4); } catch (e) { /* ignore */ }
+            try { fs.unlinkSync(outMp4); } catch (e) { /* ignore */ }
         }
-        return png16;
-    } finally {
-        try { fs.unlinkSync(safeImg); } catch (e) { /* ignore */ }
-        try { fs.unlinkSync(srcMp4); } catch (e) { /* ignore */ }
-        try { fs.unlinkSync(outMp4); } catch (e) { /* ignore */ }
+        curInput = passOut;
     }
+    return finalPng;
 }
 
 async function runImageBatch() {
@@ -899,8 +1021,15 @@ async function runImageBatch() {
         for (let attempt = 1; attempt <= 2; ++attempt) {   // one retry masks transient engine hiccups
             try {
                 const png = await renderStillOnce(file, b.cfg);
-                if (b.fmt === 'png') fs.copyFileSync(png, dst);
-                else await runFfmpeg(['-i', png, '-q:v', '2', '-f', 'image2', dst]);
+                if (b.fmt === 'png') {
+                    fs.copyFileSync(png, dst);
+                } else {
+                    await runFfmpeg(['-i', png, '-q:v', '2', '-f', 'image2', dst]);
+                    // ffmpeg drops the tEXt chunk on transcode: re-stamp the jpg with the
+                    // render params read back from the source png.
+                    const meta = await readRenderMeta(png);
+                    if (meta) await stampRenderMeta(dst, meta);
+                }
                 try { fs.unlinkSync(png); } catch (e) { /* ignore */ }
                 b.ok++;
                 lastErr = null;
@@ -1481,6 +1610,18 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // Reads render-parameter metadata stamped on a finished mp4/png/jpg and returns the JSON
+    // (whitelist only — the engine already stored only render-affecting keys). Used by the
+    // "拖入媒体恢复参数" drop zone.
+    if (url.pathname === '/api/read-meta' && req.method === 'POST') {
+        const body = await readBody(req);
+        const p = (body.path || '').trim();
+        if (!p || !fs.existsSync(p)) return sendJson(res, 400, { ok: false, error: '文件不存在' });
+        const meta = await readRenderMeta(p);
+        if (!meta) return sendJson(res, 200, { ok: true, found: false });
+        return sendJson(res, 200, { ok: true, found: true, meta });
+    }
+
     // Renders a single still image through the DLSS NR engine and returns the "before"/"after"
     // as PNGs. Internally the image is looped into a tiny lossless clip (NR is a video pipeline:
     // it needs a video reader + encoder even for one frame); the first rendered frame is what a
@@ -1499,10 +1640,6 @@ const server = http.createServer(async (req, res) => {
 
         fs.mkdirSync(FRAME_DIR, { recursive: true });
         const ts = Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
-        const srcMp4 = path.join(FRAME_DIR, `src_${ts}.mp4`);
-        const outMp4 = path.join(FRAME_DIR, `out_${ts}.mp4`);
-        const rendered16 = path.join(FRAME_DIR, `rendered_${ts}_16.png`);
-        let renderedPath = rendered16;
 
         try {
             // 0) Snapshot the input into a PRIVATE copy before anything else runs. Consecutive
@@ -1513,53 +1650,15 @@ const server = http.createServer(async (req, res) => {
             await new Promise((ok, bad) =>
                 fs.copyFile(input, safeImg, (e) => (e ? bad(new Error('复制输入失败: ' + e.message)) : ok())));
 
-            // 1) Loop the still into a 3-frame lossless clip. x264 -qp 0 (lossless) + 4:4:4 keeps
-            //    the pixels intact through the encode so the rendered frame truly is the image's.
-            await runFfmpeg([
-                '-loop', '1', '-framerate', '30', '-i', safeImg,
-                '-frames:v', '3',
-                '-pix_fmt', 'yuv444p',
-                '-c:v', 'libx264', '-qp', '0', '-preset', 'ultrafast',
-                srcMp4,
-            ]);
-
-            // 2) Run the engine over the tiny clip with the user's model parameters. A still has
-            //    no motion, so frame guidance is forced to 0 (force-zero) -- skips the NV-OF init
-            //    entirely, which is both faster and the correct input for a static image.
+            // 1) Render through the engine. A still has no motion, so renderStillOnce forces
+            //    frame guidance to 0 (force-zero) -- skips NV-OF init, correct for a static
+            //    image. cfg.renderPasses repeats the still in a generative loop (each pass
+            //    renders the previous pass's output), matching the whole-video 渲染次数.
             const exe = findEngine();
             if (!fs.existsSync(exe)) {
                 return sendJson(res, 500, { ok: false, error: 'engine not found' });
             }
-            // Same pixel-exact reasoning as render-frame: the still's rendered clip is written
-            // losslessly in 4:4:4 so no encoder/colour-subsampling artifact reaches the PNG.
-            const imgCfg = Object.assign({}, cfg, {
-                frameGuidance: 0,
-                startTime: 0,
-                endTime: 0.1,
-                encoder: 'libx264',
-                pixFmt: 'yuv444p',
-                codecArgs: '-qp 0 -preset ultrafast',
-            });
-            const args = engineArgs(imgCfg, srcMp4, outMp4, true);
-            // Ask the engine for a TRUE 16-bit PNG of the first frame (model output at 16-bit
-            // float, residual-blended, scaled to 0..65535 -- no 8-bit quantisation, so smooth
-            // gradients cannot band). Requires the newer engine; older builds fall back below.
-            args.push('--png16', rendered16);
-            await runEngine(exe, args);
-
-            // 3) Result PNG: prefer the engine's 16-bit export; fall back to decoding the
-            //    lossless clip's first frame for older engines.
-            if (fs.existsSync(rendered16)) {
-                renderedPath = rendered16;
-            } else {
-                renderedPath = path.join(FRAME_DIR, `rendered_${ts}.png`);
-                await runFfmpeg([
-                    '-i', outMp4, '-frames:v', '1', '-f', 'image2', renderedPath,
-                ]);
-            }
-
-            try { fs.unlinkSync(srcMp4); } catch (e) { /* ignore */ }
-            try { fs.unlinkSync(outMp4); } catch (e) { /* ignore */ }
+            const renderedPath = await renderStillOnce(safeImg, cfg);
 
             const dim = await new Promise((res) => {
                 execFile('ffprobe', ['-v', 'error', '-select_streams', 'v:0',
@@ -1580,8 +1679,6 @@ const server = http.createServer(async (req, res) => {
                 height: dim.height,
             });
         } catch (e) {
-            try { fs.unlinkSync(srcMp4); } catch (e2) { /* ignore */ }
-            try { fs.unlinkSync(outMp4); } catch (e2) { /* ignore */ }
             return sendJson(res, 500, { ok: false, error: e.message || 'render-image failed' });
         }
     }
@@ -1724,8 +1821,10 @@ const server = http.createServer(async (req, res) => {
         try {
             if (/\.jpe?g$/i.test(dst)) {
                 await runFfmpeg(['-i', src, '-q:v', '2', '-f', 'image2', dst]);
+                const meta = await readRenderMeta(src);
+                if (meta) await stampRenderMeta(dst, meta);
             } else {
-                fs.copyFileSync(src, dst);
+                fs.copyFileSync(src, dst);   // png keeps its tEXt chunk intact
             }
         } catch (e) {
             return sendJson(res, 500, { ok: false, error: 'save failed: ' + e.message });

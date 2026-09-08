@@ -145,7 +145,14 @@ bool NvofMotion::createSession() {
     init.outGridSize = (NV_OF_OUTPUT_VECTOR_GRID_SIZE)m_grid;
     init.hintGridSize = NV_OF_HINT_VECTOR_GRID_SIZE_UNDEFINED;
     init.mode = NV_OF_MODE_OPTICALFLOW;
-    init.perfLevel = NV_OF_PERF_LEVEL_MEDIUM;
+    // Quality tier (--mvec-quality 0/1/2). SLOW (5) is documented as "lowest performance, best
+    // quality" — its iterative refinement measurably cuts the flow noise on low-texture surfaces
+    // that DLSSNR otherwise amplifies into shimmer. FAST/MEDIUM exist for users who prioritise
+    // speed over flow accuracy.
+    static const NV_OF_PERF_LEVEL kPerf[3] = {NV_OF_PERF_LEVEL_FAST, NV_OF_PERF_LEVEL_MEDIUM,
+                                              NV_OF_PERF_LEVEL_SLOW};
+    const int tier = (m_quality < 0) ? 0 : (m_quality > 2 ? 2 : m_quality);
+    init.perfLevel = kPerf[tier];
     init.enableExternalHints = NV_OF_FALSE;
     init.enableOutputCost = NV_OF_FALSE;
     init.hPrivData = nullptr;

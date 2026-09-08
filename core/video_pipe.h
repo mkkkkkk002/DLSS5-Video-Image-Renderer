@@ -59,10 +59,14 @@ public:
     // Encodes packed RGBA from stdin. audioSrc, when non-empty, is mapped in with -c:a copy so
     // the original soundtrack survives untouched. audioStartSec, when non-zero, trims the audio
     // source to start at that offset so it stays in sync with a cropped decode window.
+    // metaComment, when non-empty, is written as a container-level comment metadata tag (the
+    // render-parameter payload shared with server.js); it must be shell-safe (no quotes) since
+    // it is spliced into the ffmpeg command line.
     bool open(const std::string& outPath, int width, int height, double fps,
               const std::string& encoder, const std::string& audioSrc,
               double audioStartSec = 0.0, const std::string& extraArgs = "",
-              const std::string& pixFmt = "yuv420p", bool raw16 = false);
+              const std::string& pixFmt = "yuv420p", bool raw16 = false,
+              const std::string& metaComment = "");
     bool writeFrame(const uint8_t* src, size_t bytes);
     void close();
     bool isOpen() const { return m_pipe != nullptr; }

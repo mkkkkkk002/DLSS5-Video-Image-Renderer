@@ -31,6 +31,13 @@ public:
     uint32_t gridWidth() const { return m_gridW; }
     uint32_t gridHeight() const { return m_gridH; }
 
+    // NV-OF engine quality tier (NV_OF_PERF_LEVEL). 0 = FAST (high perf, lower quality),
+    // 1 = MEDIUM, 2 = SLOW (lowest perf, best quality). Default 2 (SLOW) — this is an offline
+    // renderer, so the best-quality tier costs nothing in wall time that matters. Must be set
+    // before init().
+    void setQuality(int tier) { m_quality = tier; }
+    int quality() const { return m_quality; }
+
     // Feed the next RGBA8 frame (w*h*4), produce the sparse flow grid (gridW*gridH, one
     // NV_OF_FLOW_VECTOR per cell, S10.5 /32 px scale) in outGrid. First frame yields zeros (no
     // previous reference yet).
@@ -53,6 +60,7 @@ private:
     uint32_t m_w = 0, m_h = 0;
     uint32_t m_grid = 4;
     uint32_t m_gridW = 0, m_gridH = 0;
+    int m_quality = 2;              // NV_OF_PERF_LEVEL tier: 0 FAST / 1 MEDIUM / 2 SLOW
 
     Microsoft::WRL::ComPtr<ID3D11Texture2D> m_inTex[2];
     Microsoft::WRL::ComPtr<ID3D11Texture2D> m_inStaging[2];

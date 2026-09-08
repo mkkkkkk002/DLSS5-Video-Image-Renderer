@@ -38,6 +38,7 @@
 #include "depth_anything.h"
 #include "blend_pass.h"
 #include "densify_pass.h"
+#include "meta_io.h"
 
 namespace {
 
@@ -271,6 +272,7 @@ struct Options {
     bool keepAudio = true;
     bool daemon = false;         // resident mode: keep loaded resources, serve jobs from stdin
     int frameGuidance = 3;     // 0 = Force Zero (no motion), 3 = NV-OF hardware optical flow
+    int mvecQuality = 2;       // NV-OF engine tier: 0 FAST / 1 MEDIUM / 2 SLOW (default best)
     int depthInterval = 0;     // Update depth-from-color every N frames; 0 = Force Zero
     bool hwDecode = false;     // --hw-decode: NVDEC. Measured no faster than software decode in
                                // this pipeline (data still round-trips to system memory) and it
@@ -285,6 +287,24 @@ struct Options {
     std::string png16;         // --png16 <path>: write first frame as a 16-bit PNG (no banding)
     DlssNrSettings nr;
 };
+
+// Compact JSON of the render-affecting parameters (whitelist shared with server.js): the UI
+// restores exactly these when a stamped file is dragged in. Paths/encoder/hardware knobs are
+// deliberately excluded.
+static std::string serializeRenderMeta(const Options& o) {
+    char buf[384];
+    int n = snprintf(buf, sizeof(buf),
+                     "{\"v\":1,\"preset\":%d,\"style\":%d,\"intensity\":%.4g,"
+                     "\"localTone\":%.4g,\"localStructure\":%.4g,\"skinStructure\":%.4g,"
+                     "\"autoMask\":%d,\"uiCorrection\":%d,\"residualMult\":%.4g,"
+                     "\"frameGuidance\":%d,\"mvecQuality\":%d,\"depthInterval\":%d,"
+                     "\"frameReset\":%s}",
+                     o.nr.preset, o.nr.style, (double)o.nr.intensity, (double)o.nr.localTone,
+                     (double)o.nr.localStructure, (double)o.nr.skinStructure, o.nr.useAutoMask,
+                     o.nr.uiCorrection, (double)o.residualMult, o.frameGuidance, o.mvecQuality,
+                     o.depthInterval, o.frameReset ? "true" : "false");
+    return n > 0 ? std::string(buf, (size_t)n) : std::string();
+}
 
 void usage() {
     printf(
@@ -323,6 +343,9 @@ void usage() {
         "                            NV-OF needs a supported NVIDIA GPU + driver; if it is\n"
         "                            requested but unavailable the job fails with an error\n"
         "                            rather than silently degrading\n"
+        "  --mvec-quality <0|1|2>    NV-OF engine tier: 0 FAST (fastest, noisier flow),\n"
+        "                            1 MEDIUM, 2 SLOW (default: slowest, most accurate flow).\n"
+        "                            Quality mainly shows as flow noise on low-texture areas\n"
         "  --depth-interval <N>       update depth from DepthAnything every N frames\n"
         "                            (0 = Force Zero depth)\n"
         "  --residual-mult <f>        residual reconstruction: out = in + (model-in)*f\n"
@@ -565,6 +588,7 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
     std::unique_ptr<DepthAnything> depthModel;
     if (useNvof) {
         nvof = std::make_unique<NvofMotion>();
+        nvof->setQuality(opt.mvecQuality);
         if (!nvof->init(useW, useH)) {
             const char* e = nvof->lastError();
             printf("ERROR: NV-OF requested (--frame-guidance 3) but unavailable (%s).\n", e);
@@ -682,8 +706,11 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
     if (reader.usedHw()) printf("decoder : NVDEC (hardware)\n");
     VideoWriter writer;
     std::string audioSrc = (opt.keepAudio && info.hasAudio) ? opt.input : std::string();
+    // Stamp the output with the render parameters so a finished file can be dragged back into
+    // the UI to restore the exact settings (server.js reads this comment).
+    const std::string metaComment = makeMetaPayload(serializeRenderMeta(opt));
     if (!writer.open(opt.output, (int)useW, (int)useH, info.fps, opt.encoder, audioSrc,
-                     opt.startTime, opt.extraArgs, opt.pixFmt, deepOut)) {
+                     opt.startTime, opt.extraArgs, opt.pixFmt, deepOut, metaComment)) {
         printf("ERROR: could not start the encoder\n");
         reader.close();
         return 1;
@@ -992,11 +1019,18 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
             std::vector<uint16_t> rgba16((size_t)useW * useH * 4);
             finalize16(inP, outF16.data(), rgba16.data(), (uint32_t)useW, (uint32_t)useH,
                        opt.residualMult);
-            if (writePng16(opt.png16, useW, useH, rgba16.data()))
+            if (writePng16(opt.png16, useW, useH, rgba16.data())) {
                 printf("wrote 16-bit PNG -> %s\n", opt.png16.c_str());
-            else
+                // Stamp the render parameters into the PNG (tEXt chunk) so the finished image
+                // can restore the exact settings when dragged back into the UI.
+                const std::string metaPayload = makeMetaPayload(serializeRenderMeta(opt));
+                const bool metaOk = injectMetaFile(opt.png16, metaPayload);
+                printf("png16 meta-inject: %s (%zu bytes payload)\n",
+                       metaOk ? "ok" : "FAILED", metaPayload.size());
+            } else {
                 printf("WARNING: cannot write 16-bit PNG %s (is ffmpeg on PATH?)\n",
                        opt.png16.c_str());
+            }
         }
         auto tL = T();
         addNs(perf.residual, tK, tL);
@@ -1163,6 +1197,29 @@ int wmain(int argc, wchar_t** argv) {
         else if (flag == "--list-gpus") opt.listGpus = true;
     }
 
+    // Standalone metadata stamping: dlss5nr_engine --meta-inject out.png --meta-json '{"v":1,...}'
+    // Injects into PNG (tEXt) or JPG (COM marker), then exits without touching the GPU pipeline.
+    // server.js calls this after transcoding a stamped PNG to JPG (ffmpeg drops tEXt on transcode).
+    for (int i = 1; i < argc; ++i) {
+        std::string flag = narrow(argv[i]);
+        if (flag != "--meta-inject") continue;
+        std::string file = (i + 1 < argc) ? narrow(argv[i + 1]) : "";
+        std::string json;
+        for (int j = i + 2; j + 1 < argc; ++j)
+            if (narrow(argv[j]) == "--meta-json") json = narrow(argv[j + 1]);
+        if (file.empty() || json.empty()) {
+            fprintf(stderr,
+                    "usage: dlss5nr_engine --meta-inject <png|jpg> --meta-json <compactJson>\n");
+            return 2;
+        }
+        if (!injectMetaFile(file, makeMetaPayload(json))) {
+            fprintf(stderr, "meta-inject failed on %s (png/jpg only?)\n", file.c_str());
+            return 1;
+        }
+        printf("meta-injected: %s\n", file.c_str());
+        return 0;
+    }
+
     for (int i = 1; i < argc; ++i) {
         std::string a = narrow(argv[i]);
         if (a == "--help" || a == "-h") {
@@ -1198,6 +1255,7 @@ int wmain(int argc, wchar_t** argv) {
         else if (a == "--png16") opt.png16 = v;
         else if (a == "--residual-mult") parseFloat(v.c_str(), opt.residualMult);
         else if (a == "--frame-guidance") parseInt(v.c_str(), opt.frameGuidance);
+        else if (a == "--mvec-quality") parseInt(v.c_str(), opt.mvecQuality);
         else if (a == "--depth-interval") parseInt(v.c_str(), opt.depthInterval);
         else if (a == "--gpu-idx") parseInt(v.c_str(), opt.gpuIdx);
         else if (a == "--perf") { opt.perf = true; --i; }

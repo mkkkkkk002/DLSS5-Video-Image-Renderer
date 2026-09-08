@@ -405,6 +405,14 @@
           <input type="checkbox" id="flowEnable" checked>
           <label for="flowEnable">Enable hardware NV-OF motion vectors</label>
         </div>
+        <label class="field" style="margin-top:4px;" title="NV-OF 引擎质量档位。SLOW = 最慢但光流最准（默认）；FAST 提速但低纹理区噪声更明显。离线渲染建议 SLOW">
+          <span>NV-OF 质量档位</span>
+          <select id="mvecQuality">
+            <option value="2" selected>SLOW（最准，推荐）</option>
+            <option value="1">MEDIUM</option>
+            <option value="0">FAST（最快）</option>
+          </select>
+        </label>
       </div>
 
       <label class="field">
@@ -416,6 +424,16 @@
         <span>渲染次数</span>
         <input type="number" id="renderPasses" value="1" min="1" step="1" title="整段视频重复渲染遍数,必须 ≥ 1,上限不限;耗时与遍数成正比">
       </label>
+
+      <div id="metaDrop" style="margin-top:8px; border:1px dashed var(--border,#999); border-radius:6px; padding:8px 10px; text-align:center; font-size:12px; color:var(--txt2,#888); cursor:pointer; user-select:none; display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:128px;" title="把本软件输出的视频/图片拖进来，自动恢复当初的渲染参数">
+        <div id="metaDropHint" style="font-size:15px; font-weight:500;">🎯 拖入成品文件 · 自动恢复渲染参数</div>
+        <div style="margin-top:6px; font-size:12px; opacity:.75;">支持本软件输出的 mp4 / mkv / png / jpg（点击此处也可选择文件）</div>
+        <div id="metaDropMsg" style="display:none; margin-top:6px; font-size:12px;"></div>
+      </div>
+      <div style="display:flex; gap:6px; margin-top:4px;">
+        <button class="btn" id="metaUndoBtn" disabled style="flex:1; padding:1px 6px; font-size:12px;" title="撤销上一步参数调整 (Ctrl+Z)">↩ 撤销</button>
+        <button class="btn" id="metaRedoBtn" disabled style="flex:1; padding:1px 6px; font-size:12px;" title="重做 (Ctrl+Y)">↪ 重做</button>
+      </div>
     </div>
   </div>
 
@@ -518,6 +536,14 @@
         <button class="btn primary" id="imgRenderBtn" disabled>渲染此图</button>
         <button class="btn" id="imgZoomBtn" disabled title="打开全屏对比,鼠标拖动分隔条仔细看渲染差异">放大对比</button>
         <button class="btn" id="imgSaveBtn" disabled>保存渲染结果…</button>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; margin-top:6px;">
+        <span style="display:inline-flex; align-items:center; gap:4px; white-space:nowrap;">
+          <span class="meta" style="font-size:12px;">渲染次数</span>
+          <input type="number" id="imgRenderPasses" value="1" min="1" step="1" style="width:64px;"
+                 title="图片重复渲染遍数：第 2 遍起把上一遍的渲染结果当作新图片再渲一次。1 = 渲一次；>1 = 迭代增强（耗时随遍数增长）。仅作用于本卡的「渲染此图」与图片批量渲染">
+        </span>
+        <span class="meta" id="imgPassHint" style="font-size:11px; opacity:.65;">仅作用于本卡「渲染此图」与批量图片渲染</span>
       </div>
 
       <div class="meta" id="imgStatus" style="margin-top:6px;"></div>
@@ -1393,9 +1419,21 @@ function buildJobCfg() {
         uiCorrection: $('uiCorrection').checked ? 1 : 0,
         residualMult: parseFloat($('residualMult_n').value) || 1.0,
         frameGuidance: $('flowEnable').checked ? 3 : 0,
+        mvecQuality: parseInt($('mvecQuality').value, 10) || 2,
         depthInterval: parseInt($('depthInterval').value, 10) || 0,
         renderPasses: Math.max(1, parseInt($('renderPasses').value, 10) || 1),
     };
+}
+
+// Still-image single/batch jobs ("渲染此图" + the folder batch) share the video-tuning
+// parameters but carry their OWN 渲染次数 (imgRenderPasses), so the whole-video 渲染次数 and
+// the image module's are independent controls. Note: the player's "快速渲染当前帧" is NOT
+// routed through here — it snapshots the video frame and therefore uses the VIDEO board's
+// 渲染次数 (buildJobCfg) instead.
+function imgJobCfg() {
+  const o = buildJobCfg();
+  o.renderPasses = Math.max(1, parseInt($('imgRenderPasses').value, 10) || 1);
+  return o;
 }
 
 function showExportMsg(text, isErr) {
@@ -1780,7 +1818,7 @@ $('imgRenderBtn').addEventListener('click', async () => {
     const r = await fetch('/api/render-image', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: imgPickPath, cfg: buildJobCfg() }),
+      body: JSON.stringify({ input: imgPickPath, cfg: imgJobCfg() }),
     }).then((x) => x.json());
     if (!r.ok) {
       $('imgStatus').textContent = '渲染失败: ' + (r.error || 'unknown');
@@ -1889,7 +1927,7 @@ $('imgBatchStart').addEventListener('click', async () => {
     dir: src,
     outDir: $('imgBatchOut').value.trim(),
     format: $('imgBatchFmt').value,
-    cfg: buildJobCfg(),
+    cfg: imgJobCfg(),
   };
   const r = await fetch('/api/image-batch', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -1992,7 +2030,7 @@ const PARAM_IDS = [
   'model', 'preset', 'style',
   'intensity', 'localTone', 'localStructure', 'skinStructure',
   'autoMask', 'uiCorrection', 'residualMult',
-  'flowEnable', 'depthInterval',
+  'flowEnable', 'mvecQuality', 'depthInterval',
   'encoder', 'renderPasses',
 ];
 
@@ -2037,6 +2075,156 @@ PARAM_IDS.forEach((id) => {
   el.addEventListener('change', save);
 });
 restoreParams();
+
+// ---------------------------------------------------------------- meta 恢复 + 参数撤销/重做
+// The engine stamps finished mp4/png/jpg with the render parameters ("render_cfg=" payload).
+// Dropping such a file restores those settings instantly (no confirmation — the user asked for
+// it by dropping). An undo/redo stack records parameter-set changes so a mistaken restore can
+// be rolled back with Ctrl+Z / Ctrl+Y.
+// Mapping between the meta JSON keys (engine whitelist) and the UI control ids. frameGuidance
+// drives the flowEnable checkbox; keys with no UI control are ignored on restore.
+const META_TO_UI = {
+  preset: 'preset', style: 'style',
+  intensity: 'intensity', localTone: 'localTone', localStructure: 'localStructure',
+  skinStructure: 'skinStructure', autoMask: 'autoMask', uiCorrection: 'uiCorrection',
+  residualMult: 'residualMult', mvecQuality: 'mvecQuality', depthInterval: 'depthInterval',
+};
+
+let paramHistory = [];    // snapshots (oldest first); newest at the end
+let historyIndex = -1;    // index of the current state within paramHistory
+const HISTORY_MAX = 24;
+
+function snapshotParams() {
+  const o = {};
+  for (const id of PARAM_IDS) {
+    const el = $(id);
+    if (!el) continue;
+    o[id] = (el.type === 'checkbox') ? el.checked : el.value;
+  }
+  return o;
+}
+
+function pushHistory() {
+  const snap = snapshotParams();
+  // Drop any redo tail (a new change after undo invalidates the redo branch).
+  paramHistory = paramHistory.slice(0, historyIndex + 1);
+  paramHistory.push(snap);
+  if (paramHistory.length > HISTORY_MAX) paramHistory.shift();
+  historyIndex = paramHistory.length - 1;
+  syncHistoryBtns();
+}
+
+function applySnapshot(snap) {
+  if (!snap) return;
+  for (const id of PARAM_IDS) if (id in snap) applyParamTo(id, snap[id]);
+}
+
+function undoParams() {
+  if (historyIndex <= 0) return;
+  historyIndex--;
+  applySnapshot(paramHistory[historyIndex]);
+  persistParams();
+  syncHistoryBtns();
+}
+
+function redoParams() {
+  if (historyIndex < 0 || historyIndex >= paramHistory.length - 1) return;
+  historyIndex++;
+  applySnapshot(paramHistory[historyIndex]);
+  persistParams();
+  syncHistoryBtns();
+}
+
+function syncHistoryBtns() {
+  $('metaUndoBtn').disabled = historyIndex <= 0;
+  $('metaRedoBtn').disabled = historyIndex < 0 || historyIndex >= paramHistory.length - 1;
+}
+
+$('metaUndoBtn').addEventListener('click', undoParams);
+$('metaRedoBtn').addEventListener('click', redoParams);
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); undoParams(); }
+  else if (e.ctrlKey && e.shiftKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); redoParams(); }
+  else if (e.ctrlKey && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redoParams(); }
+});
+pushHistory();   // baseline state
+
+// Record a history step on slider/number/checkbox changes (input events during dragging would
+// flood the stack, so only the settled change is recorded).
+PARAM_IDS.forEach((id) => {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener('change', pushHistory);
+});
+
+// Apply a decoded meta JSON to the UI controls, then snapshot the new state as one undo step.
+function applyRenderMeta(meta) {
+  for (const [k, id] of Object.entries(META_TO_UI)) {
+    if (k in meta) applyParamTo(id, meta[k]);
+  }
+  if ('frameGuidance' in meta) applyParamTo('flowEnable', meta.frameGuidance !== 0);
+  persistParams();
+  pushHistory();
+}
+
+async function metaDropFile(file) {
+  const okExt = /\.(mp4|mkv|mov|m4v|png|jpe?g)$/i.test(file.name);
+  if (!okExt) {
+    showMetaMsg('仅支持本软件输出的 mp4/mkv/png/jpg', true);
+    return;
+  }
+  try {
+    const up = await fetch('/api/upload', {
+      method: 'POST',
+      headers: { 'X-Filename': encodeURIComponent(file.name) },
+      body: file,
+    }).then((x) => x.json());
+    if (!up.ok || !up.path) throw new Error(up.error || '上传失败');
+    const r = await fetch('/api/read-meta', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: up.path }),
+    }).then((x) => x.json());
+    if (!r.ok || !r.found || !r.meta) {
+      showMetaMsg('该文件未包含渲染参数（可能不是本软件输出的）', true);
+      return;
+    }
+    applyRenderMeta(r.meta);
+    const summ = Object.entries(r.meta)
+      .filter(([k]) => META_TO_UI[k] || k === 'frameGuidance')
+      .map(([k, v]) => k + '=' + v).join('  ');
+    showMetaMsg('✅ 已恢复参数：' + summ, false);
+  } catch (e) {
+    showMetaMsg('恢复失败: ' + e.message, true);
+  }
+}
+
+function showMetaMsg(text, isErr) {
+  const m = $('metaDropMsg');
+  m.textContent = text;
+  m.style.color = isErr ? '#c44' : '#3a8a4a';
+  m.style.display = '';
+  setTimeout(() => { m.style.display = 'none'; }, 6000);
+}
+
+const metaDrop = $('metaDrop');
+['dragenter', 'dragover'].forEach((ev) => metaDrop.addEventListener(ev, (e) => {
+  e.preventDefault(); e.stopPropagation(); metaDrop.style.borderColor = '#4a9';
+}));
+['dragleave', 'drop'].forEach((ev) => metaDrop.addEventListener(ev, (e) => {
+  e.preventDefault(); e.stopPropagation(); metaDrop.style.borderColor = '';
+}));
+metaDrop.addEventListener('drop', (e) => {
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f) metaDropFile(f);
+});
+metaDrop.addEventListener('click', () => {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = '.mp4,.mkv,.mov,.m4v,.png,.jpg,.jpeg';
+  inp.onchange = () => { if (inp.files && inp.files[0]) metaDropFile(inp.files[0]); };
+  inp.click();
+});
 
 // ---------------------------------------------------------------- named presets
 // User-saved snapshots of the 参数设置 card ONLY (encoder belongs to 输出设置 and is not part

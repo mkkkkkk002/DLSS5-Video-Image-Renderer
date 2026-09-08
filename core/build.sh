@@ -13,7 +13,7 @@ cd "$(dirname "$0")"
 
 echo "=== building dlss5nr_engine ==="
 cl.exe /nologo /O2 /MD /EHa /std:c++17 /W3 \
-    main.cpp ngx_params.cpp d3d12_ctx.cpp dlssnr.cpp video_pipe.cpp nvof_flow.cpp depth_anything.cpp blend_pass.cpp densify_pass.cpp \
+    main.cpp ngx_params.cpp d3d12_ctx.cpp dlssnr.cpp video_pipe.cpp nvof_flow.cpp depth_anything.cpp blend_pass.cpp densify_pass.cpp meta_io.cpp \
     /Fe:dlss5nr_engine.exe \
     /link d3d12.lib dxgi.lib d3d11.lib d3dcompiler.lib
 

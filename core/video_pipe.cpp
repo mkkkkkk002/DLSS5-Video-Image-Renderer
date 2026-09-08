@@ -209,7 +209,7 @@ void VideoReader::close() {
 bool VideoWriter::open(const std::string& outPath, int width, int height, double fps,
                        const std::string& encoder, const std::string& audioSrc,
                        double audioStartSec, const std::string& extraArgs,
-                       const std::string& pixFmt, bool raw16) {
+                       const std::string& pixFmt, bool raw16, const std::string& metaComment) {
     std::string encArgs;
     if (encoder == "h264_nvenc") {
         encArgs = "-c:v h264_nvenc -preset p4 -rc vbr -cq 20 -b:v 0";
@@ -223,6 +223,11 @@ bool VideoWriter::open(const std::string& outPath, int width, int height, double
         encArgs = "-c:v " + encoder;
     }
     if (!extraArgs.empty()) encArgs += " " + extraArgs;
+
+    // Render-parameter metadata: written as a container-level comment (payload is base64url,
+    // shell-safe, no quoting issues). mp4/mkv both accept -metadata comment.
+    std::string metaArg;
+    if (!metaComment.empty()) metaArg = " -metadata comment=\"" + metaComment + "\"";
 
     // When the decode window starts past zero the audio stream must be trimmed to the same
     // offset, otherwise the soundtrack drifts out of sync with the cropped video.
@@ -258,7 +263,7 @@ bool VideoWriter::open(const std::string& outPath, int width, int height, double
         cmd += L" -map 0:v:0";
     }
     cmd += L" " + widen(encArgs) + widen(pixFilter) + L" -pix_fmt " + widen(outFmt) +
-           L" -movflags +faststart " + wquote(widen(outPath));
+           widen(metaArg) + L" -movflags +faststart " + wquote(widen(outPath));
     m_pipe = WPOPEN(cmd.c_str(), L"wb");
 #else
     std::string cmd = "ffmpeg -y -v error -f rawvideo -pix_fmt rgba -s " +
@@ -272,7 +277,8 @@ bool VideoWriter::open(const std::string& outPath, int width, int height, double
     } else {
         cmd += " -map 0:v:0";
     }
-    cmd += " " + encArgs + " -pix_fmt yuv420p -movflags +faststart " + quote(outPath);
+    cmd += " " + encArgs + " -pix_fmt yuv420p" + metaArg + " -movflags +faststart " +
+           quote(outPath);
     m_pipe = WPOPEN(cmd, "wb");
 #endif
     return m_pipe != nullptr;
