@@ -25,7 +25,46 @@ void D3D12Ctx::setError(const char* msg) {
 // GPU selection is user-driven (web UI passes --gpu-idx). A -1 / unset still uses the
 // heuristic below (NVIDIA preferred, then most dedicated VRAM) as a sensible default.
 static int g_wantIdx = -1;
+static ComPtr<IDXGIAdapter1> g_selAdapter;   // adapter chosen by d3dSetAdapter/d3dPickAdapter
 void d3dSetAdapter(int index) { g_wantIdx = index; }
+
+static void collectAdapters(std::vector<ComPtr<IDXGIAdapter1>>& out);   // fwd decl
+static void d3dPickAdapter(const std::vector<ComPtr<IDXGIAdapter1>>& list);
+
+// Returns the adapter that rendering uses (same selection rules as D3D12), or null when none
+// was picked yet / none exists. NV-OF creates its D3D11 device on the SAME adapter so hardware
+// optical flow lands on the real GPU even when the OS default adapter is an iGPU or a virtual
+// display (the classic Optimus "flow on the iGPU" failure).
+IDXGIAdapter1* d3dGetRenderAdapter() {
+    if (!g_selAdapter) {
+        std::vector<ComPtr<IDXGIAdapter1>> list;
+        collectAdapters(list);
+        if (list.empty()) return nullptr;
+        d3dPickAdapter(list);   // fills g_selAdapter using g_wantIdx / heuristic
+    }
+    return g_selAdapter.Get();
+}
+
+// Recomputes the render adapter from the current g_wantIdx / heuristic and keeps it alive.
+// Reusing pickBestAdapter() directly would leak a Detach()ed ref every call, so selection is
+// centralised here and pickBestAdapter() simply Detaches the stored pointer.
+static void d3dPickAdapter(const std::vector<ComPtr<IDXGIAdapter1>>& list) {
+    if (list.empty()) { g_selAdapter.Reset(); return; }
+    unsigned chosen = 0;
+    if (g_wantIdx >= 0 && (unsigned)g_wantIdx < list.size()) {
+        chosen = (unsigned)g_wantIdx;              // user explicitly picked this one
+    } else {
+        UINT64 bestScore = 0;                      // default heuristic
+        for (unsigned i = 0; i < list.size(); ++i) {
+            DXGI_ADAPTER_DESC1 d;
+            list[i]->GetDesc1(&d);
+            UINT64 score = (d.VendorId == 0x10DE) ? 1000000000ULL : 0;
+            score += d.DedicatedVideoMemory;
+            if (score > bestScore) { bestScore = score; chosen = i; }
+        }
+    }
+    g_selAdapter = list[chosen];
+}
 
 // Count outputs physically attached to this adapter (virtual-display clones report 0).
 static UINT countOutputs(IDXGIAdapter1* a) {
@@ -93,22 +132,18 @@ static IDXGIAdapter1* pickBestAdapter() {
     std::vector<ComPtr<IDXGIAdapter1>> list;
     collectAdapters(list);
     if (list.empty()) return nullptr;
-    unsigned chosen = 0;
-    if (g_wantIdx >= 0 && (unsigned)g_wantIdx < list.size()) {
-        chosen = (unsigned)g_wantIdx;              // user explicitly picked this one
-    } else {
-        UINT64 bestScore = 0;                      // default heuristic
-        for (unsigned i = 0; i < list.size(); ++i) {
-            DXGI_ADAPTER_DESC1 d;
-            list[i]->GetDesc1(&d);
-            UINT64 score = (d.VendorId == 0x10DE) ? 1000000000ULL : 0;
-            score += d.DedicatedVideoMemory;
-            if (score > bestScore) { bestScore = score; chosen = i; }
-        }
-    }
-    printf("[d3d12] using adapter %u:\n", chosen);
-    printAdapter(chosen, list[chosen].Get());
-    return list[chosen].Detach();
+    d3dPickAdapter(list);
+    if (!g_selAdapter) return nullptr;
+    // Find the picked adapter's index for the log line (descriptions can be identical on
+    // virtual-display clones, so show the actual position in the filtered list).
+    unsigned idx = 0;
+    for (size_t i = 0; i < list.size(); ++i)
+        if (list[i].Get() == g_selAdapter.Get()) { idx = (unsigned)i; break; }
+    printf("[d3d12] using adapter %u:\n", idx);
+    printAdapter(idx, g_selAdapter.Get());
+    IDXGIAdapter1* a = g_selAdapter.Get();
+    a->AddRef();                       // caller (init) owns this ref
+    return a;
 }
 
 bool D3D12Ctx::init() {

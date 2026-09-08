@@ -17,6 +17,10 @@ using Microsoft::WRL::ComPtr;
 // buys nothing when the CPU is feeding frames one at a time anyway.
 void d3dSetAdapter(int index);
 int  d3dListGpus();
+// Returns the DXGI adapter rendering uses (same selection rules as D3D12), or null when none.
+// NV-OF and any other D3D11 consumer create their device on THIS adapter so hardware features
+// land on the real GPU even when the OS default adapter is an iGPU or a virtual display.
+IDXGIAdapter1* d3dGetRenderAdapter();
 
 class D3D12Ctx {
 public:

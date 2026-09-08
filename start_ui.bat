@@ -4,6 +4,15 @@ cd /d "%~dp0"
 where node >nul 2>&1
 if errorlevel 1 goto noNode
 
+REM ---- NVIDIA GPU preference (hybrid-GPU laptops) ----
+REM Tell Windows to run the engine on the high-performance (NVIDIA) GPU so hardware
+REM optical flow (NV-OF) is created on the real GPU, not the iGPU/virtual display.
+set "ENGINE_EXE=%~dp0core\dlss5nr_engine.exe"
+if exist "%ENGINE_EXE%" (
+    reg add "HKCU\SOFTWARE\Microsoft\DirectX\UserGpuPreferences" /v "%ENGINE_EXE%" /t REG_SZ /d "GpuPreference=2;" /f >nul 2>&1
+    if not errorlevel 1 echo  [gpu] engine set to high-performance GPU
+)
+
 REM If port 8777 is already held, the service itself steps to the next free port
 REM (web/server.js bindServer) and prints the actual address - we never kill an old instance.
 

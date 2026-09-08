@@ -566,9 +566,28 @@ static int runJob(DaemonState& st, Options& opt, const std::atomic<bool>* cancel
     if (useNvof) {
         nvof = std::make_unique<NvofMotion>();
         if (!nvof->init(useW, useH)) {
-            printf("ERROR: NV-OF requested (--frame-guidance 3) but unavailable (%s).\n",
-                   nvof->lastError());
-            printf("       Re-run with --frame-guidance 0 (Force Zero motion) or fix the driver.\n");
+            const char* e = nvof->lastError();
+            printf("ERROR: NV-OF requested (--frame-guidance 3) but unavailable (%s).\n", e);
+            // Give an actionable hint: the two most common causes are the GPU defaulting to an
+            // iGPU/virtual display (fixed by the render-GPU selection or Windows GPU preference)
+            // and a driver build that ships without the optical-flow component.
+            if (strstr(e, "D3D11CreateDevice failed") || strstr(e, "nvCreateOpticalFlowD3D11 failed") ||
+                strstr(e, "nvOFInit failed") || strstr(e, "INVALID_DEVICE") || strstr(e, "ERR_DEVICE")) {
+                printf("  HINT: the optical-flow device could not be created on the NVIDIA GPU.\n");
+                printf("  - Hybrid-GPU laptop? In Windows: Settings > System > Display > Graphics,\n");
+                printf("    add core\\dlss5nr_engine.exe and choose High performance.\n");
+                printf("  - Or pick your NVIDIA card in the web UI's \"渲染显卡\" dropdown.\n");
+                printf("  - Also confirm the NVIDIA driver is the latest Game Ready/Studio build.\n");
+            } else if (strstr(e, "nvofapi64.dll unavailable") || strstr(e, "not found")) {
+                printf("  HINT: the NVIDIA optical-flow API (nvofapi64.dll) is missing.\n");
+                printf("  Update to the latest NVIDIA driver; on Windows 11 check Settings >\n");
+                printf("  Windows Update > Advanced > Optional updates for driver updates.\n");
+            } else {
+                printf("  HINT: if the driver is up to date, report this error text when asking\n");
+                printf("        for help. Meanwhile you can turn optical flow OFF and still render\n");
+                printf("        (motion vectors will be zeroed).\n");
+            }
+            printf("  You can also re-run with --frame-guidance 0 (Force Zero motion).\n");
             return 1;
         }
         printf("NVOF initialized: grid=%upx, motion source = hardware optical flow\n",

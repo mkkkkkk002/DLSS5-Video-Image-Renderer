@@ -6,15 +6,24 @@
 
 #include <cmath>
 #include <cstring>
+#include <cstdio>
 
 #include <wrl/client.h>
 #include <d3d11.h>
+
 #undef min
 #undef max
 
 #include "nvof/nvOpticalFlowD3D11.h"
+#include "d3d12_ctx.h"   // d3dGetRenderAdapter: run NV-OF on the same GPU the render pipeline uses
 
 using Microsoft::WRL::ComPtr;
+
+static std::string to_hex(uint32_t v) {
+    char b[16];
+    snprintf(b, sizeof b, "%08X", (unsigned)v);
+    return b;
+}
 
 NvofMotion::~NvofMotion() { destroySession(); }
 
@@ -44,12 +53,41 @@ bool NvofMotion::init(uint32_t w, uint32_t h) {
 
 bool NvofMotion::createSession() {
     // ---- create a dedicated D3D11 device (independent of the D3D12 pipeline) ----
+    // Prefer the SAME adapter the render pipeline picked (d3dSetAdapter / --gpu-idx / the
+    // NVIDIA-first heuristic). NV-OF needs to run on the real NVIDIA GPU; the OS *default*
+    // D3D11 adapter is often an iGPU or a virtual display on Optimus laptops / streaming
+    // setups, where NV-OF creation fails with NV_OF_ERR_INVALID_DEVICE. Fall back to the
+    // default adapter only when the explicit one cannot create a device.
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, nullptr,
-                                   0, D3D11_SDK_VERSION, &m_dev11, nullptr, &m_ctx11);
+    HRESULT hr = E_FAIL;
+    ComPtr<IDXGIAdapter1> renderAdapter;
+    if (IDXGIAdapter1* a = d3dGetRenderAdapter()) {
+        renderAdapter = a;
+        hr = D3D11CreateDevice(renderAdapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags,
+                               nullptr, 0, D3D11_SDK_VERSION, &m_dev11, nullptr, &m_ctx11);
+    }
     if (FAILED(hr) || !m_dev11 || !m_ctx11) {
-        m_err = "D3D11CreateDevice failed";
+        m_dev11.Reset();
+        m_ctx11.Reset();
+        hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, nullptr,
+                               0, D3D11_SDK_VERSION, &m_dev11, nullptr, &m_ctx11);
+    }
+    if (FAILED(hr) || !m_dev11 || !m_ctx11) {
+        m_err = "D3D11CreateDevice failed (0x" + to_hex((uint32_t)hr) +
+                "). If you have a hybrid-GPU laptop, make sure the software runs on the NVIDIA "
+                "GPU (Windows Settings > System > Display > Graphics > set the engine exe to "
+                "High performance).";
         return false;
+    }
+    if (renderAdapter) {
+        DXGI_ADAPTER_DESC1 d;
+        if (SUCCEEDED(renderAdapter->GetDesc1(&d))) {
+            char nm[128] = {0};
+            WideCharToMultiByte(CP_UTF8, 0, d.Description, -1, nm, (int)sizeof(nm) - 1, 0, 0);
+            printf("[nvof11] D3D11 device on render adapter: %s\n", nm);
+        }
+    } else {
+        printf("[nvof11] D3D11 device on system default adapter\n");
     }
 
     // ---- load NVOF ----

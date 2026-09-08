@@ -203,15 +203,34 @@ function runEngine(exe, args) {
     return new Promise((ok, bad) => {
         const p = spawn(exe, args, { cwd: ROOT, windowsHide: true });
         let out = '', err = '';
-        p.stdout.on('data', (c) => {
-            out += c.toString('utf8');
-            if (out.length > 65536) out = out.slice(-65536);
-        });
-        p.stderr.on('data', (c) => {
-            err += c.toString('utf8');
-            if (err.length > 65536) err = err.slice(-65536);
-        });
+        // Guard against an engine that hangs (GPU/driver stall, e.g. a device that never
+        // completes a fence). Without this the UI would spin on "渲染中/引擎冷启动" forever.
+        // 10 minutes of total silence is far beyond any real first-frame latency; treat it as
+        // a hang, kill the child and surface a clear error instead of waiting indefinitely.
+        const HANG_MS = 10 * 60 * 1000;
+        const killTimer = setTimeout(() => {
+            try { p.kill(); } catch (e) { /* ignore */ }
+            const tail = [...out.split(/\r?\n/), ...err.split(/\r?\n/)]
+                .map((s) => s.trim()).filter((s) => s).slice(-4).join(' | ');
+            bad(new Error('engine hung (no output for 10 min) — GPU/driver may be stalled'
+                + (tail ? '. Last lines: ' + tail : '')));
+        }, HANG_MS);
+        // First-output watchdog: if the engine produces NOTHING within 45s of launch it is
+        // almost certainly stuck during startup (D3D device / driver init) — the classic
+        // "一直提示正在渲染, 然后完全没反应" symptom. Kill it and say so instead of hanging.
+        let gotAny = false;
+        const firstTimer = setTimeout(() => {
+            if (gotAny) return;
+            try { p.kill(); } catch (e) { /* ignore */ }
+            bad(new Error('engine produced no output within 45s — likely stuck during GPU/driver '
+                + 'initialisation. Check the graphics driver, or try a different 渲染显卡 / model. '
+                + (err ? 'stderr: ' + err.trim().slice(-200) : '')));
+        }, 45000);
+        // Any progress output resets the watchdog: a render that is producing frames is alive.
+        p.stdout.on('data', (c) => { gotAny = true; clearTimeout(firstTimer); killTimer.refresh(); out += c.toString('utf8'); if (out.length > 65536) out = out.slice(-65536); });
+        p.stderr.on('data', (c) => { err += c.toString('utf8'); if (err.length > 65536) err = err.slice(-65536); });
         p.on('close', (code) => {
+            clearTimeout(killTimer); clearTimeout(firstTimer);
             if (code === 0) return ok();
             const detail = [...out.split(/\r?\n/), ...err.split(/\r?\n/)]
                 .map((s) => s.trim())
@@ -220,7 +239,7 @@ function runEngine(exe, args) {
                 .join(' | ');
             bad(new Error('engine exit ' + (code === null ? -1 : code) + (detail ? ' — ' + detail : '')));
         });
-        p.on('error', bad);
+        p.on('error', (e) => { clearTimeout(killTimer); clearTimeout(firstTimer); bad(e); });
     });
 }
 
