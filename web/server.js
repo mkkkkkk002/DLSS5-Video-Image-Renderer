@@ -1868,7 +1868,7 @@ function bindServer(port) {
     });
     server.listen(port, '127.0.0.1', () => {
         const url = 'http://127.0.0.1:' + port + '/';
-        console.log('DLSS5NR 视频渲染服务 v1.4 已启动 — Web 界面: ' + url);
+        console.log('DLSS5NR 视频渲染服务 v1.5 已启动 — Web 界面: ' + url);
         fs.mkdirSync(OUTPUTS_DIR, { recursive: true });
         cleanUploadsDir();   // fallback only: normal shutdown cleanup is done by server_guard.exe
         cleanFrameDir();     // fallback only: normal shutdown cleanup is done by server_guard.exe
